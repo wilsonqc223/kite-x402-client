@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -11,8 +12,10 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/Chesten223/kite-x402-client/internal/kite"
+	"github.com/Chesten223/kite-x402-client/internal/rpc"
 	"github.com/Chesten223/kite-x402-client/internal/x402"
 )
 
@@ -25,6 +28,8 @@ func main() {
 	switch os.Args[1] {
 	case "probe":
 		err = cmdProbe(os.Args[2:])
+	case "balance":
+		err = cmdBalance(os.Args[2:])
 	case "pay":
 		err = cmdPay(os.Args[2:])
 	case "receipt":
@@ -41,16 +46,15 @@ func main() {
 		os.Exit(1)
 	}
 }
-
 func usage() {
 	fmt.Fprint(os.Stderr, `kx402 — x402 client toolkit for the Kite AI chains
 
   kx402 probe <url>          Fetch a URL and decode its 402 payment challenge
   kx402 receipt <base64>     Decode a PAYMENT-RESPONSE settlement receipt
+  kx402 balance [addr]       Native KITE + stablecoin balance on one chain
 
   kx402 pay <url>            Pay the 402 challenge and fetch the content
     -X, -method GET          HTTP method for the paid request
-    -d, -data @file|-        Request body ("-" for stdin, or a literal string)
     -H, -header K:V          Extra header, repeatable
     -o, -option N            Pay accepts[N] instead of auto-selecting
     -key-file PATH           Private key file (else $KITE_PRIVATE_KEY)
@@ -58,7 +62,7 @@ func usage() {
 Environment:
   KITE_PRIVATE_KEY  0x-prefixed private key used by 'pay' (never a CLI
                     argument, so it cannot leak into shell history)
-  KITE_NETWORK      mainnet (default) or testnet, used to label assets
+  KITE_NETWORK      network for 'balance' (default testnet) and asset labels
 `)
 }
 
@@ -300,14 +304,19 @@ func chainByNetwork(network string) (kite.Chain, bool) {
 // formatUnits renders an integer smallest-unit amount as a decimal USD-style
 // string when the chain is known, falling back to the raw integer.
 func formatUnits(amount string, chain kite.Chain, known bool) string {
+	if !known {
+		return fmt.Sprintf("%s (raw units)", amount)
+	}
+	return unitsToDecimal(amount, int(chain.AssetDecimals))
+}
+
+// unitsToDecimal renders an integer smallest-unit amount with the given
+// number of fractional digits (integer string math, no floats).
+func unitsToDecimal(amount string, decimals int) string {
 	units, ok := new(big.Int).SetString(amount, 10)
 	if !ok {
 		return amount
 	}
-	if !known {
-		return fmt.Sprintf("%s (raw units)", amount)
-	}
-	decimals := int(chain.AssetDecimals)
 	if decimals == 0 {
 		return units.String()
 	}
@@ -318,4 +327,97 @@ func formatUnits(amount string, chain kite.Chain, known bool) string {
 	s = s[:len(s)-decimals] + "." + s[len(s)-decimals:]
 	s = strings.TrimRight(s, "0")
 	return strings.TrimSuffix(s, ".")
+}
+
+// cmdBalance shows native and stablecoin balances of an address on one Kite
+// network. Without an argument (and with a key available) it uses the
+// wallet's own address.
+func cmdBalance(args []string) error {
+	fs := flag.NewFlagSet("balance", flag.ExitOnError)
+	network := fs.String("net", "", "testnet (default) or mainnet")
+	keyFile := fs.String("key-file", "", "private key file (to default the address)")
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "usage: kx402 balance [-net testnet|mainnet] [address]")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 1 {
+		fs.Usage()
+		os.Exit(2)
+	}
+
+	name := strings.TrimSpace(*network)
+	if name == "" {
+		name = strings.TrimSpace(os.Getenv("KITE_NETWORK"))
+	}
+	if name == "" {
+		name = "testnet"
+	}
+	chain, err := kite.ByNetwork(name)
+	if err != nil {
+		return err
+	}
+
+	address := ""
+	if fs.NArg() == 1 {
+		address = fs.Arg(0)
+	} else if key := strings.TrimSpace(envOrDefault("KITE_PRIVATE_KEY", "")); key != "" || *keyFile != "" {
+		loaded, err := loadKey(*keyFile)
+		if err != nil {
+			return err
+		}
+		signer, err := x402.NewSignerFromHex(loaded)
+		if err != nil {
+			return err
+		}
+		address = signer.Address()
+	} else {
+		fs.Usage()
+		return fmt.Errorf("pass an address, or set KITE_PRIVATE_KEY / -key-file to use the wallet's")
+	}
+
+	return balanceOut(chain, chain.RPCURL, address, os.Stdout)
+}
+
+// balanceOut queries one chain and prints the wallet picture.
+func balanceOut(chain kite.Chain, rpcURL, address string, out io.Writer) error {
+	client := rpc.New(rpcURL).WithHTTP(&http.Client{Timeout: 15 * time.Second})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	chainID, err := client.ChainID(ctx)
+	if err != nil {
+		return fmt.Errorf("asking %s for the chain id: %w", chain.RPCURL, err)
+	}
+	if chainID != chain.ChainID {
+		return fmt.Errorf("%s reports chain id %d, expected %d — is -net right?",
+			chain.RPCURL, chainID, chain.ChainID)
+	}
+	block, err := client.BlockNumber(ctx)
+	if err != nil {
+		return fmt.Errorf("fetching block number: %w", err)
+	}
+	native, err := client.NativeBalance(ctx, address)
+	if err != nil {
+		return fmt.Errorf("fetching native balance: %w", err)
+	}
+	stable, err := client.ERC20BalanceOf(ctx, chain.AssetAddress, address)
+	if err != nil {
+		return fmt.Errorf("fetching %s balance: %w", chain.AssetSymbol, err)
+	}
+
+	fmt.Fprintf(out, "%s (chain %d, block %d)\n", chain.Network, chainID, block)
+	fmt.Fprintf(out, "%s  %s KITE\n", address, unitsToDecimal(native.String(), 18))
+	fmt.Fprintf(out, "%s  %s %s\n",
+		strings.Repeat(" ", len(address)), unitsToDecimal(stable.String(), int(chain.AssetDecimals)), chain.AssetSymbol)
+	return nil
+}
+
+func envOrDefault(key, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		return value
+	}
+	return fallback
 }

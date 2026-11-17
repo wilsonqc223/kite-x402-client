@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Chesten223/kite-x402-client/internal/kite"
@@ -91,6 +93,56 @@ func TestFormatUnits(t *testing.T) {
 		if got := formatUnits(tc.amount, chain, known); got != tc.want {
 			t.Errorf("formatUnits(%q, %s) = %q, want %q", tc.amount, tc.network, got, tc.want)
 		}
+	}
+}
+
+func TestBalanceOut(t *testing.T) {
+	var mu sync.Mutex
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		result := map[string]string{
+			"eth_chainId":     "0x940",
+			"eth_blockNumber": "0x64",
+			"eth_getBalance":  "0xde0b6b3a7640000", // 1 KITE
+			"eth_call":        "0x38d7ea4c68000",   // 0.001 * 10^18
+		}[req.Method]
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"jsonrpc": "2.0", "id": 1, "result": result,
+		})
+	}))
+	defer server.Close()
+
+	var out strings.Builder
+	if err := balanceOut(kite.Testnet, server.URL, "0xAbC", &out); err != nil {
+		t.Fatalf("balanceOut: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{"eip155:2368 (chain 2368, block 100)", "1 KITE", "0.001 pieUSD"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("balance output missing %q\n%s", want, got)
+		}
+	}
+	if calls != 4 {
+		t.Errorf("made %d RPC calls, want 4", calls)
+	}
+}
+
+func TestBalanceOutRejectsWrongChain(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"jsonrpc": "2.0", "id": 1, "result": "0x1", // chain id 1
+		})
+	}))
+	defer server.Close()
+	if err := balanceOut(kite.Testnet, server.URL, "0xAbC", &strings.Builder{}); err == nil {
+		t.Error("balanceOut with mismatched chain id = nil error, want error")
 	}
 }
 

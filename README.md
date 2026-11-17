@@ -51,13 +51,24 @@ transaction: 0xabc...
 amount:      0.001 pieUSD
 ```
 
-### Pay (in development)
+### Pay for the content
 
-`kx402 pay <url>` — fetch the challenge, sign an EIP-3009
-`transferWithAuthorization` for the option you pick, retry the request with
-the `PAYMENT-SIGNATURE` header, and print the paid response plus the
-settlement receipt. The wallet key is read from `KITE_PRIVATE_KEY` (never a
-CLI argument, so it cannot leak into shell history).
+```bash
+$ export KITE_PRIVATE_KEY=0x...   # or pass -key-file; never a CLI argument
+$ kx402 pay https://paid-api.example.com/v1/forecast
+paid option 0 as 0x1088...846
+settled: tx 0xabc... on eip155:2368 (0.001 pieUSD)
+{"data":"paid!"}
+```
+
+`pay` fetches the challenge, signs an EIP-3009 `transferWithAuthorization`
+for the option you pick (`-o N`, default: the first option on a known Kite
+network), retries the request with the `PAYMENT-SIGNATURE` header, and
+prints the paid response plus the settlement receipt. The body goes to
+stdout, progress and the receipt to stderr, so `kx402 pay … | jq` just
+works. The EIP-712 wire format is verified against the real Kite
+facilitator — `go run ./examples/facilitator-livecheck` reproduces the
+proof (the facilitator recovers the payer from the signature).
 
 ## Networks
 

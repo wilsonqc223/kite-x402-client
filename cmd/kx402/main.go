@@ -25,6 +25,8 @@ func main() {
 	switch os.Args[1] {
 	case "probe":
 		err = cmdProbe(os.Args[2:])
+	case "pay":
+		err = cmdPay(os.Args[2:])
 	case "receipt":
 		err = cmdReceipt(os.Args[2:])
 	case "help", "-h", "--help":
@@ -43,13 +45,140 @@ func main() {
 func usage() {
 	fmt.Fprint(os.Stderr, `kx402 — x402 client toolkit for the Kite AI chains
 
-Usage:
   kx402 probe <url>          Fetch a URL and decode its 402 payment challenge
   kx402 receipt <base64>     Decode a PAYMENT-RESPONSE settlement receipt
 
+  kx402 pay <url>            Pay the 402 challenge and fetch the content
+    -X, -method GET          HTTP method for the paid request
+    -d, -data @file|-        Request body ("-" for stdin, or a literal string)
+    -H, -header K:V          Extra header, repeatable
+    -o, -option N            Pay accepts[N] instead of auto-selecting
+    -key-file PATH           Private key file (else $KITE_PRIVATE_KEY)
+
 Environment:
-  KITE_NETWORK   mainnet (default) or testnet, used to label assets
+  KITE_PRIVATE_KEY  0x-prefixed private key used by 'pay' (never a CLI
+                    argument, so it cannot leak into shell history)
+  KITE_NETWORK      mainnet (default) or testnet, used to label assets
 `)
+}
+
+// cmdPay performs the full x402 payment flow for one URL.
+func cmdPay(args []string) error {
+	fs := flag.NewFlagSet("pay", flag.ExitOnError)
+	method := fs.String("X", "GET", "HTTP method")
+	fs.StringVar(method, "method", "GET", "HTTP method")
+	data := fs.String("d", "", "request body: @file, - for stdin, or a literal string")
+	fs.StringVar(data, "data", "", "request body: @file, - for stdin, or a literal string")
+	var headers headerList
+	fs.Var(&headers, "H", "extra request header K:V (repeatable)")
+	fs.Var(&headers, "header", "extra request header K:V (repeatable)")
+	option := fs.Int("o", -1, "index of the payment option to pay (default: auto)")
+	fs.IntVar(option, "option", -1, "index of the payment option to pay (default: auto)")
+	keyFile := fs.String("key-file", "", "private key file (default: $KITE_PRIVATE_KEY)")
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "usage: kx402 pay [flags] <url>")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		fs.Usage()
+		os.Exit(2)
+	}
+
+	key, err := loadKey(*keyFile)
+	if err != nil {
+		return err
+	}
+	signer, err := x402.NewSignerFromHex(key)
+	if err != nil {
+		return err
+	}
+	body, err := readBody(*data)
+	if err != nil {
+		return err
+	}
+
+	result, err := x402.Pay(http.DefaultClient, fs.Arg(0), *method, body, headers, signer, *option)
+	if err != nil {
+		return err
+	}
+
+	if result.Paid {
+		fmt.Fprintf(os.Stderr, "paid option %d as %s\n", result.Option, signer.Address())
+		if result.Receipt != nil {
+			chain, known := chainByNetwork(result.Receipt.Network)
+			fmt.Fprintf(os.Stderr, "settled: tx %s on %s", result.Receipt.Transaction, result.Receipt.Network)
+			if result.Receipt.Amount != nil {
+				fmt.Fprintf(os.Stderr, " (%s %s)", formatUnits(*result.Receipt.Amount, chain, known), chain.AssetSymbol)
+			}
+			fmt.Fprintln(os.Stderr)
+		}
+	} else if result.Challenge != nil {
+		if result.Challenge.Error != nil {
+			fmt.Fprintf(os.Stderr, "payment rejected: %s\n", *result.Challenge.Error)
+		} else {
+			fmt.Fprintln(os.Stderr, "payment rejected")
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "endpoint answered without a 402 challenge (status %d)\n", result.Status)
+	}
+
+	fmt.Printf("%s\n", result.Body)
+	if result.Status >= 400 {
+		os.Exit(2)
+	}
+	return nil
+}
+
+// headerList collects repeatable -H K:V flags.
+type headerList [][2]string
+
+func (h *headerList) String() string { return fmt.Sprint([]([2]string)(*h)) }
+
+func (h *headerList) Set(value string) error {
+	key, val, ok := strings.Cut(value, ":")
+	if !ok {
+		return fmt.Errorf("header %q must be K:V", value)
+	}
+	*h = append(*h, [2]string{strings.TrimSpace(key), strings.TrimSpace(val)})
+	return nil
+}
+
+// loadKey reads the wallet key from a file or the environment.
+func loadKey(path string) (string, error) {
+	if path != "" {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return "", fmt.Errorf("reading key file: %w", err)
+		}
+		key := strings.TrimSpace(string(raw))
+		if key == "" {
+			return "", fmt.Errorf("key file %s is empty", path)
+		}
+		return key, nil
+	}
+	key := strings.TrimSpace(os.Getenv("KITE_PRIVATE_KEY"))
+	if key == "" {
+		return "", fmt.Errorf("no wallet: set KITE_PRIVATE_KEY or pass -key-file")
+	}
+	return key, nil
+}
+
+// readBody resolves the -d flag: @file reads a file, - reads stdin, and
+// anything else is a literal body string.
+func readBody(spec string) ([]byte, error) {
+	switch {
+	case spec == "":
+		return nil, nil
+	case spec == "-":
+		return io.ReadAll(os.Stdin)
+	case strings.HasPrefix(spec, "@"):
+		return os.ReadFile(strings.TrimPrefix(spec, "@"))
+	default:
+		return []byte(spec), nil
+	}
 }
 
 // cmdProbe fetches a URL unpaid and pretty-prints the 402 challenge's

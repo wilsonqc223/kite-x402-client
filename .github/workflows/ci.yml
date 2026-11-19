@@ -1,0 +1,47 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race ./...
+      - name: Build
+        run: |
+          go build ./...
+          go build -o /tmp/kx402 ./cmd/kx402
+      - name: CLI smoke
+        run: |
+          /tmp/kx402 receipt "$(printf '%s' '{"success":true,"transaction":"0xci","network":"eip155:2368"}' | base64 -w0)" | grep -q settled
+
+  # Cross-repo end-to-end against the kite-x402-axum service binary: build
+  # the sibling checkout, then pay it with kx402 through a mock facilitator.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Checkout kite-x402-axum
+        uses: actions/checkout@v4
+        with:
+          repository: tianzeshi-study/kite-x402-axum
+          path: kite-x402-axum
+      - name: Build the service
+        run: cargo build --release -p kite-x402-service
+        working-directory: kite-x402-axum
+      - name: Run the e2e example
+        run: go run ./examples/e2e-axum-service -bin ../kite-x402-axum/target/release/kite-x402-service

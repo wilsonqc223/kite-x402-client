@@ -70,6 +70,19 @@ works. The EIP-712 wire format is verified against the real Kite
 facilitator — `go run ./examples/facilitator-livecheck` reproduces the
 proof (the facilitator recovers the payer from the signature).
 
+### Cross-repo end-to-end against the kite-x402-axum service
+
+```bash
+cd ../kite-x402-axum && cargo build -p kite-x402-service
+cd ../kite-x402-client
+go run ./examples/e2e-axum-service -bin ../kite-x402-axum/target/debug/kite-x402-service
+```
+
+Launches the real Rust service behind a mock facilitator/upstream and pays
+it with `kx402` — probe, EIP-3009 signature, settle receipt — proving the
+client against the server template end to end. CI runs the same flow on
+every push.
+
 ## Networks
 
 | Network | CAIP-2      | Asset        | Decimals | EIP-712 domain             |

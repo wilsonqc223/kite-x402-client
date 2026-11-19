@@ -42,13 +42,27 @@ resource: Daily weather forecast
   ...
 ```
 
+### Show your wallet
+
+```bash
+$ kx402 wallet -address-only     # the address to fund
+0x1088...
+$ kx402 wallet                   # address + balances on both networks
+```
+
 ### Decode a settlement receipt
 
 ```bash
-$ kx402 receipt "$(echo ... | grep -i payment-response)"
+$ kx402 receipt --json "$(curl -si $URL | awk -F': ' '/payment-response/{print $2}')"
+{
+  "success": true,
+  "transaction": "0xabc...",
+  "network": "eip155:2368",
+  "amount": "1000000000000000"
+}
+# or human-readable, straight off stdin:
+$ ... | kx402 receipt -
 settled on eip155:2368
-transaction: 0xabc...
-amount:      0.001 pieUSD
 ```
 
 ### Pay for the content

@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -32,6 +33,8 @@ func main() {
 		err = cmdBalance(os.Args[2:])
 	case "pay":
 		err = cmdPay(os.Args[2:])
+	case "wallet":
+		err = cmdWallet(os.Args[2:])
 	case "receipt":
 		err = cmdReceipt(os.Args[2:])
 	case "help", "-h", "--help":
@@ -253,8 +256,9 @@ func probe(rawURL string, out io.Writer) error {
 // cmdReceipt decodes a base64 PAYMENT-RESPONSE header value.
 func cmdReceipt(args []string) error {
 	fs := flag.NewFlagSet("receipt", flag.ExitOnError)
+	asJSON := fs.Bool("json", false, "print the decoded receipt as JSON")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: kx402 receipt <base64>")
+		fmt.Fprintln(os.Stderr, "usage: kx402 receipt [--json] <base64 | ->")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -264,9 +268,25 @@ func cmdReceipt(args []string) error {
 		fs.Usage()
 		os.Exit(2)
 	}
-	receipt, err := x402.DecodeReceipt(fs.Arg(0))
+	raw := fs.Arg(0)
+	if raw == "-" {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return fmt.Errorf("reading stdin: %w", err)
+		}
+		raw = strings.TrimSpace(string(data))
+	}
+	receipt, err := x402.DecodeReceipt(raw)
 	if err != nil {
 		return err
+	}
+	if *asJSON {
+		encoded, err := json.MarshalIndent(receipt, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(encoded))
+		return nil
 	}
 	status := "FAILED"
 	if receipt.Success {
@@ -379,6 +399,43 @@ func cmdBalance(args []string) error {
 	}
 
 	return balanceOut(chain, chain.RPCURL, address, os.Stdout)
+}
+
+// cmdWallet prints the wallet's address (from the key) and, unless
+// -address-only is set, its balances on both Kite networks — the natural
+// first command when setting up: fund this address, then pay.
+func cmdWallet(args []string) error {
+	fs := flag.NewFlagSet("wallet", flag.ExitOnError)
+	keyFile := fs.String("key-file", "", "private key file (default: $KITE_PRIVATE_KEY)")
+	addressOnly := fs.Bool("address-only", false, "print just the address")
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "usage: kx402 wallet [-key-file PATH] [-address-only]")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	key, err := loadKey(*keyFile)
+	if err != nil {
+		return err
+	}
+	signer, err := x402.NewSignerFromHex(key)
+	if err != nil {
+		return err
+	}
+	if *addressOnly {
+		fmt.Println(signer.Address())
+		return nil
+	}
+	fmt.Printf("wallet: %s\n", signer.Address())
+	fmt.Println("fund it (testnet faucet drops 0.5 KITE): https://faucet.gokite.ai")
+	for _, chain := range []kite.Chain{kite.Testnet, kite.Mainnet} {
+		fmt.Println()
+		if err := balanceOut(chain, chain.RPCURL, signer.Address(), os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "kx402: %s: %v\n", chain.Network, err)
+		}
+	}
+	return nil
 }
 
 // balanceOut queries one chain and prints the wallet picture.

@@ -44,4 +44,4 @@ jobs:
         run: cargo build --release -p kite-x402-service
         working-directory: kite-x402-axum
       - name: Run the e2e example
-        run: go run ./examples/e2e-axum-service -bin ../kite-x402-axum/target/release/kite-x402-service
+        run: go run ./examples/e2e-axum-service -bin ./kite-x402-axum/target/release/kite-x402-service

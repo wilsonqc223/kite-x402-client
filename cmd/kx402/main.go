@@ -37,6 +37,8 @@ func main() {
 		err = cmdWallet(os.Args[2:])
 	case "receipt":
 		err = cmdReceipt(os.Args[2:])
+	case "version":
+		fmt.Println(versionString())
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -48,6 +50,14 @@ func main() {
 		fmt.Fprintf(os.Stderr, "kx402: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// version is set at build time via -ldflags "-X main.version=…" (see
+// .goreleaser.yml); dev builds report dev.
+var version = "dev"
+
+func versionString() string {
+	return fmt.Sprintf("kx402 %s (github.com/wilsonqc223/kite-x402-client)", version)
 }
 func usage() {
 	fmt.Fprint(os.Stderr, `kx402 — x402 client toolkit for the Kite AI chains

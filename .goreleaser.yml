@@ -1,0 +1,33 @@
+version: 2
+
+project_name: kx402
+
+builds:
+  - id: kx402
+    main: ./cmd/kx402
+    binary: kx402
+    env: [CGO_ENABLED=0]
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+
+archives:
+  - id: kx402
+    builds: [kx402]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^ci:"
+      - "^test:"
+
+release:
+  draft: false
+  prerelease: auto

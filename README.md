@@ -75,6 +75,10 @@ settled: tx 0xabc... on eip155:2368 (0.001 pieUSD)
 {"data":"paid!"}
 ```
 
+`probe`, `pay` and `balance` all take `-proxy URL` (e.g.
+`socks5://127.0.0.1:10800`) so the client works from networks where paid
+APIs are only reachable through an egress proxy.
+
 `pay` fetches the challenge, signs an EIP-3009 `transferWithAuthorization`
 for the option you pick (`-o N`, default: the first option on a known Kite
 network), retries the request with the `PAYMENT-SIGNATURE` header, and

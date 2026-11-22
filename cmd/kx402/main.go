@@ -11,6 +11,7 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -59,6 +60,24 @@ var version = "dev"
 func versionString() string {
 	return fmt.Sprintf("kx402 %s (github.com/wilsonqc223/kite-x402-client)", version)
 }
+
+// httpClientFor builds the HTTP client for probe/pay/balance. An empty
+// proxy keeps Go's defaults; otherwise the value is a URL like
+// socks5://127.0.0.1:10800 or http://corp-gw:8080 and all traffic (including
+// DNS for socks5h-style remote resolution) flows through it.
+func httpClientFor(proxyURL string, timeout time.Duration) (*http.Client, error) {
+	if proxyURL == "" {
+		return &http.Client{Timeout: timeout}, nil
+	}
+	parsed, err := url.Parse(proxyURL)
+	if err != nil {
+		return nil, fmt.Errorf("parsing -proxy %q: %w", proxyURL, err)
+	}
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: &http.Transport{Proxy: http.ProxyURL(parsed)},
+	}, nil
+}
 func usage() {
 	fmt.Fprint(os.Stderr, `kx402 — x402 client toolkit for the Kite AI chains
 
@@ -92,6 +111,7 @@ func cmdPay(args []string) error {
 	option := fs.Int("o", -1, "index of the payment option to pay (default: auto)")
 	fs.IntVar(option, "option", -1, "index of the payment option to pay (default: auto)")
 	keyFile := fs.String("key-file", "", "private key file (default: $KITE_PRIVATE_KEY)")
+	proxy := fs.String("proxy", "", "egress proxy URL, e.g. socks5://127.0.0.1:10800")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: kx402 pay [flags] <url>")
 		fs.PrintDefaults()
@@ -117,7 +137,11 @@ func cmdPay(args []string) error {
 		return err
 	}
 
-	result, err := x402.Pay(http.DefaultClient, fs.Arg(0), *method, body, headers, signer, *option)
+	httpClient, err := httpClientFor(*proxy, 60*time.Second)
+	if err != nil {
+		return err
+	}
+	result, err := x402.Pay(httpClient, fs.Arg(0), *method, body, headers, signer, *option)
 	if err != nil {
 		return err
 	}
@@ -202,8 +226,9 @@ func readBody(spec string) ([]byte, error) {
 // advertised payment options.
 func cmdProbe(args []string) error {
 	fs := flag.NewFlagSet("probe", flag.ExitOnError)
+	proxy := fs.String("proxy", "", "egress proxy URL, e.g. socks5://127.0.0.1:10800")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: kx402 probe <url>")
+		fmt.Fprintln(os.Stderr, "usage: kx402 probe [-proxy URL] <url>")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -213,15 +238,19 @@ func cmdProbe(args []string) error {
 		fs.Usage()
 		os.Exit(2)
 	}
-	return probe(fs.Arg(0), os.Stdout)
+	httpClient, err := httpClientFor(*proxy, 30*time.Second)
+	if err != nil {
+		return err
+	}
+	return probe(httpClient, fs.Arg(0), os.Stdout)
 }
 
-func probe(rawURL string, out io.Writer) error {
+func probe(client *http.Client, rawURL string, out io.Writer) error {
 	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
 	if err != nil {
 		return fmt.Errorf("building request: %w", err)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("fetching %s: %w", rawURL, err)
 	}
@@ -366,6 +395,7 @@ func cmdBalance(args []string) error {
 	fs := flag.NewFlagSet("balance", flag.ExitOnError)
 	network := fs.String("net", "", "testnet (default) or mainnet")
 	keyFile := fs.String("key-file", "", "private key file (to default the address)")
+	proxyFlag := fs.String("proxy", "", "egress proxy URL, e.g. socks5://127.0.0.1:10800")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: kx402 balance [-net testnet|mainnet] [address]")
 		fs.PrintDefaults()
@@ -408,7 +438,11 @@ func cmdBalance(args []string) error {
 		return fmt.Errorf("pass an address, or set KITE_PRIVATE_KEY / -key-file to use the wallet's")
 	}
 
-	return balanceOut(chain, chain.RPCURL, address, os.Stdout)
+	httpClient, err := httpClientFor(*proxyFlag, 15*time.Second)
+	if err != nil {
+		return err
+	}
+	return balanceOut(chain, chain.RPCURL, address, os.Stdout, httpClient)
 }
 
 // cmdWallet prints the wallet's address (from the key) and, unless
@@ -441,7 +475,11 @@ func cmdWallet(args []string) error {
 	fmt.Println("fund it (testnet faucet drops 0.5 KITE): https://faucet.gokite.ai")
 	for _, chain := range []kite.Chain{kite.Testnet, kite.Mainnet} {
 		fmt.Println()
-		if err := balanceOut(chain, chain.RPCURL, signer.Address(), os.Stdout); err != nil {
+		httpClient, err := httpClientFor("", 15*time.Second)
+		if err != nil {
+			return err
+		}
+		if err := balanceOut(chain, chain.RPCURL, signer.Address(), os.Stdout, httpClient); err != nil {
 			fmt.Fprintf(os.Stderr, "kx402: %s: %v\n", chain.Network, err)
 		}
 	}
@@ -449,8 +487,8 @@ func cmdWallet(args []string) error {
 }
 
 // balanceOut queries one chain and prints the wallet picture.
-func balanceOut(chain kite.Chain, rpcURL, address string, out io.Writer) error {
-	client := rpc.New(rpcURL).WithHTTP(&http.Client{Timeout: 15 * time.Second})
+func balanceOut(chain kite.Chain, rpcURL, address string, out io.Writer, httpClient *http.Client) error {
+	client := rpc.New(rpcURL).WithHTTP(httpClient)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 

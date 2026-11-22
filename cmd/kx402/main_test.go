@@ -45,7 +45,7 @@ func TestProbeDecodesChallenge(t *testing.T) {
 	defer server.Close()
 
 	var out strings.Builder
-	if err := probe(server.URL+"/v1/forecast", &out); err != nil {
+	if err := probe(http.DefaultClient, server.URL+"/v1/forecast", &out); err != nil {
 		t.Fatalf("probe: %v", err)
 	}
 
@@ -71,7 +71,7 @@ func TestProbeRejectsOrdinaryEndpoint(t *testing.T) {
 	defer server.Close()
 
 	var out strings.Builder
-	if err := probe(server.URL, &out); err == nil {
+	if err := probe(http.DefaultClient, server.URL, &out); err == nil {
 		t.Error("probe on a free endpoint = nil error, want error")
 	}
 }
@@ -120,7 +120,7 @@ func TestBalanceOut(t *testing.T) {
 	defer server.Close()
 
 	var out strings.Builder
-	if err := balanceOut(kite.Testnet, server.URL, "0xAbC", &out); err != nil {
+	if err := balanceOut(kite.Testnet, server.URL, "0xAbC", &out, http.DefaultClient); err != nil {
 		t.Fatalf("balanceOut: %v", err)
 	}
 	got := out.String()
@@ -141,7 +141,7 @@ func TestBalanceOutRejectsWrongChain(t *testing.T) {
 		})
 	}))
 	defer server.Close()
-	if err := balanceOut(kite.Testnet, server.URL, "0xAbC", &strings.Builder{}); err == nil {
+	if err := balanceOut(kite.Testnet, server.URL, "0xAbC", &strings.Builder{}, http.DefaultClient); err == nil {
 		t.Error("balanceOut with mismatched chain id = nil error, want error")
 	}
 }

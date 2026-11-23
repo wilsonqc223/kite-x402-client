@@ -159,7 +159,7 @@ func dispatch(req request, proxy string) (json.RawMessage, *rpcError) {
 		return mustJSON(map[string]any{
 			"protocolVersion": protocolVersion,
 			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"serverInfo":      map[string]any{"name": "kx402", "version": cli.VersionString()},
+			"serverInfo":      map[string]any{"name": "kx402", "version": cli.Version},
 		}), nil
 	case "tools/list":
 		return mustJSON(map[string]any{"tools": tools}), nil

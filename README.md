@@ -101,6 +101,25 @@ it with `kx402` — probe, EIP-3009 signature, settle receipt — proving the
 client against the server template end to end. CI runs the same flow on
 every push.
 
+## Use it from an AI agent (MCP)
+
+`kx402-mcp` speaks the Model Context Protocol over stdio, so MCP-capable
+agents get three tools — `kx402_probe`, `kx402_balance`, `kx402_pay` —
+without leaving their chat:
+
+```json
+{
+  "mcpServers": {
+    "kx402": {
+      "command": "kx402-mcp",
+      "env": { "KITE_PRIVATE_KEY": "0x…", "KITE_PROXY": "socks5://127.0.0.1:10800" }
+    }
+  }
+}
+```
+
+The key lives in the server environment and is never returned to the agent.
+
 ## Networks
 
 | Network | CAIP-2      | Asset        | Decimals | EIP-712 domain             |

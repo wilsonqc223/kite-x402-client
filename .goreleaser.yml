@@ -6,9 +6,18 @@ builds:
   - id: kx402
     main: ./cmd/kx402
     binary: kx402
+  - id: kx402-mcp
+    main: ./cmd/kx402-mcp
+    binary: kx402-mcp
+    env: [CGO_ENABLED=0]
+    ldflags:
+      - -s -w -X github.com/Chesten223/kite-x402-client/internal/cli.Version={{.Version}}
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
     env: [CGO_ENABLED=0]
     ldflags:
       - -s -w -X main.version={{.Version}}
+      - -s -w -X github.com/Chesten223/kite-x402-client/internal/cli.Version={{.Version}}
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
 

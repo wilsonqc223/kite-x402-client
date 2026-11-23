@@ -2,10 +2,18 @@ version: 2
 
 project_name: kx402
 
+# Both binaries take their version from internal/cli.Version. (cmd/kx402
+# used to carry its own `main.version`; it moved into internal/cli when the
+# CLI and the MCP server started sharing that package.)
 builds:
   - id: kx402
     main: ./cmd/kx402
     binary: kx402
+    env: [CGO_ENABLED=0]
+    ldflags:
+      - -s -w -X github.com/Chesten223/kite-x402-client/internal/cli.Version={{.Version}}
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
   - id: kx402-mcp
     main: ./cmd/kx402-mcp
     binary: kx402-mcp
@@ -14,17 +22,17 @@ builds:
       - -s -w -X github.com/Chesten223/kite-x402-client/internal/cli.Version={{.Version}}
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
-    env: [CGO_ENABLED=0]
-    ldflags:
-      - -s -w -X main.version={{.Version}}
-      - -s -w -X github.com/Chesten223/kite-x402-client/internal/cli.Version={{.Version}}
-    goos: [linux, darwin, windows]
-    goarch: [amd64, arm64]
 
+# Every archive carries both binaries: the CLI and the MCP server are one
+# toolkit and are configured together.
 archives:
   - id: kx402
-    builds: [kx402]
+    ids: [kx402, kx402-mcp]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - CHANGELOG.md
+      - LICENSE
 
 checksum:
   name_template: checksums.txt

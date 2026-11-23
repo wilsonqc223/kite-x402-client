@@ -1,3 +1,4 @@
 /kx402
 *.test
 coverage.out
+dist/

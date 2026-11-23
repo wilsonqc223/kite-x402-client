@@ -45,3 +45,53 @@ jobs:
         working-directory: kite-x402-axum
       - name: Run the e2e example
         run: go run ./examples/e2e-axum-service -bin ./kite-x402-axum/target/release/kite-x402-service
+
+  # Prove the release pipeline on every push. The release workflow only
+  # runs on tags, so a broken .goreleaser.yml used to surface at release
+  # time (v0.2.0's first attempt failed on a malformed builds section). A
+  # snapshot release builds every target and packs the real archives
+  # without publishing anything.
+  release:
+    name: goreleaser snapshot
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --snapshot --skip=publish --clean
+      - name: Every archive carries both binaries
+        run: |
+          shopt -s nullglob
+          archives=(dist/*.tar.gz dist/*.zip)
+          test ${#archives[@]} -gt 0 || { echo "::error::no archives were produced"; exit 1; }
+          for archive in "${archives[@]}"; do
+            case "$archive" in
+              *.zip) listing=$(unzip -Z1 "$archive") ;;
+              *)     listing=$(tar tzf "$archive") ;;
+            esac
+            # Windows archives carry kx402.exe / kx402-mcp.exe.
+            for bin in kx402 kx402-mcp; do
+              if ! grep -qxE "$bin(\.exe)?" <<<"$listing"; then
+                echo "::error::$archive is missing $bin"; exit 1
+              fi
+            done
+          done
+          echo "all ${#archives[@]} archives carry kx402 and kx402-mcp"
+      - name: The packed binaries run and carry their version
+        run: |
+          shopt -s nullglob
+          linux=(dist/kx402_*_linux_amd64.tar.gz)
+          mkdir -p /tmp/kx402-dist && tar xzf "${linux[0]}" -C /tmp/kx402-dist
+          /tmp/kx402-dist/kx402 version
+          /tmp/kx402-dist/kx402 version | grep -q 'SNAPSHOT' \
+            || { echo "::error::version was not injected into the CLI"; exit 1; }
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+            | /tmp/kx402-dist/kx402-mcp \
+            | grep -q '"name":"kx402"' \
+            || { echo "::error::kx402-mcp did not complete the MCP handshake"; exit 1; }

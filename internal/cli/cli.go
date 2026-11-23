@@ -5,12 +5,14 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math/big"
 	"net/http"
 	"net/url"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -38,16 +40,38 @@ func HTTPClientFor(proxyURL string, timeout time.Duration) (*http.Client, error)
 	if err != nil {
 		return nil, fmt.Errorf("parsing proxy %q: %w", proxyURL, err)
 	}
-	return &http.Client{
-		Timeout:   timeout,
-		Transport: &http.Transport{Proxy: http.ProxyURL(parsed)},
-	}, nil
+	if parsed.Scheme == "" {
+		return nil, fmt.Errorf("parsing proxy %q: missing scheme (use socks5:// or http://)", proxyURL)
+	}
+	// Start from the default transport so proxying keeps everything it
+	// configures — HTTP/2, connection pooling, dial and TLS handshake
+	// timeouts — instead of silently dropping them.
+	transport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return nil, fmt.Errorf("unexpected default transport %T", http.DefaultTransport)
+	}
+	cloned := transport.Clone()
+	cloned.Proxy = http.ProxyURL(parsed)
+	return &http.Client{Timeout: timeout, Transport: cloned}, nil
 }
 
 // LoadKey reads the wallet key from a file or KITE_PRIVATE_KEY. The key is
 // only ever held in memory and returned — callers must not log it.
+//
+// A key file that other users on the machine can read is refused: a wallet
+// key is only as safe as the file holding it. The check is skipped on
+// Windows, where POSIX permission bits do not apply.
 func LoadKey(path string) (string, error) {
 	if path != "" {
+		info, err := os.Stat(path)
+		if err != nil {
+			return "", fmt.Errorf("reading key file: %w", err)
+		}
+		if runtime.GOOS != "windows" && info.Mode().IsRegular() && info.Mode().Perm()&0o077 != 0 {
+			return "", fmt.Errorf(
+				"refusing key file %s: mode %s lets other users read it (run chmod 600 %s)",
+				path, info.Mode().Perm(), path)
+		}
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			return "", fmt.Errorf("reading key file: %w", err)
@@ -125,11 +149,44 @@ func Probe(client *http.Client, rawURL string, out io.Writer) error {
 		fmt.Fprintf(out, "      payTo:  %s\n", option.PayTo)
 		fmt.Fprintf(out, "      scheme: %s (max timeout %ds)\n",
 			option.Scheme, option.MaxTimeoutSeconds)
-		if name, ok := option.Extra["name"]; ok {
-			fmt.Fprintf(out, "      domain: %s v%s\n", name, option.Extra["version"])
+		if name, ok := option.Extra["name"].(string); ok {
+			version, _ := option.Extra["version"].(string)
+			fmt.Fprintf(out, "      domain: %s v%s\n", name, version)
 		}
 	}
 	return nil
+}
+
+// ProbeJSON fetches a URL unpaid and writes the decoded 402 challenge as
+// indented JSON — the machine-readable counterpart of Probe for scripts
+// and agents.
+func ProbeJSON(client *http.Client, rawURL string, out io.Writer) error {
+	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+	if err != nil {
+		return fmt.Errorf("building request: %w", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("fetching %s: %w", rawURL, err)
+	}
+	defer resp.Body.Close()
+
+	header := resp.Header.Get(x402.HeaderPaymentRequired)
+	if resp.StatusCode != http.StatusPaymentRequired || header == "" {
+		return fmt.Errorf(
+			"%s answered %s with no PAYMENT-REQUIRED header — not an x402 paid endpoint",
+			rawURL, resp.Status)
+	}
+	challenge, err := x402.DecodeChallenge(header)
+	if err != nil {
+		return fmt.Errorf("decoding challenge: %w", err)
+	}
+	encoded, err := json.MarshalIndent(challenge, "", "  ")
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(out, string(encoded))
+	return err
 }
 
 // BalanceOut queries one chain and prints the wallet picture into out.

@@ -53,7 +53,7 @@ func TestDecodeChallenge(t *testing.T) {
 	if first.Scheme != "exact" || first.Network != "eip155:2368" {
 		t.Errorf("first option = %+v", first)
 	}
-	if first.Extra["name"] != "pieUSD" {
+	if name, _ := first.Extra["name"].(string); name != "pieUSD" {
 		t.Errorf("extra name = %q, want pieUSD", first.Extra["name"])
 	}
 	if challenge.Resource.URL != "https://api.example.com/v1/forecast" {

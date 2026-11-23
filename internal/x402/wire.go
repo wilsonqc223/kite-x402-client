@@ -15,13 +15,17 @@ import (
 // challenge and accepted in the client's payment payload. Field names match
 // the JSON the TypeScript and Go SDKs put on the wire exactly.
 type PaymentRequirements struct {
-	Scheme            string            `json:"scheme"`
-	Network           string            `json:"network"`
-	Amount            string            `json:"amount"`
-	Asset             string            `json:"asset"`
-	PayTo             string            `json:"payTo"`
-	MaxTimeoutSeconds uint64            `json:"maxTimeoutSeconds"`
-	Extra             map[string]string `json:"extra,omitempty"`
+	Scheme            string `json:"scheme"`
+	Network           string `json:"network"`
+	Amount            string `json:"amount"`
+	Asset             string `json:"asset"`
+	PayTo             string `json:"payTo"`
+	MaxTimeoutSeconds uint64 `json:"maxTimeoutSeconds"`
+	// Extra is server-defined metadata. The x402 schema allows string and
+	// number values (e.g. some assets carry a numeric chainId), so it is kept
+	// loosely typed — a single non-string value must not fail the whole
+	// challenge decode.
+	Extra map[string]any `json:"extra,omitempty"`
 }
 
 // ResourceInfo describes the protected resource in a challenge.

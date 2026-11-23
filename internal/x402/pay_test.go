@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/Chesten223/kite-x402-client/internal/kite"
 )
@@ -23,6 +22,7 @@ type paidEndpoint struct {
 	accepted  []PaymentPayload
 	free      bool // answer 200 without a challenge
 	reject    bool // keep answering 402 even when paid
+	failAfter int  // non-zero: answer with this status once a valid payment arrives
 }
 
 func (e *paidEndpoint) handler(w http.ResponseWriter, r *http.Request) {
@@ -45,6 +45,12 @@ func (e *paidEndpoint) handler(w http.ResponseWriter, r *http.Request) {
 				payload.Accepted.Network == option.Network &&
 				payload.Accepted.PayTo == option.PayTo {
 				e.accepted = append(e.accepted, payload)
+				if e.failAfter != 0 {
+					// Payment verified, but the protected handler failed: a
+					// conforming server returns that status and never settles.
+					w.WriteHeader(e.failAfter)
+					return
+				}
 				receipt := SettleResponse{
 					Success:     true,
 					Transaction: "0xsettled",
@@ -96,7 +102,7 @@ func twoOptionChallenge() PaymentRequired {
 				Asset:             kite.Testnet.AssetAddress,
 				PayTo:             "0x00000000000000000000000000000000000000ff",
 				MaxTimeoutSeconds: 60,
-				Extra:             map[string]string{"name": kite.Testnet.EIP712Name, "version": kite.Testnet.EIP712Version},
+				Extra:             map[string]any{"name": kite.Testnet.EIP712Name, "version": kite.Testnet.EIP712Version},
 			},
 			{
 				Scheme:            "exact",
@@ -105,7 +111,7 @@ func twoOptionChallenge() PaymentRequired {
 				Asset:             kite.Mainnet.AssetAddress,
 				PayTo:             "0x00000000000000000000000000000000000000ff",
 				MaxTimeoutSeconds: 60,
-				Extra:             map[string]string{"name": kite.Mainnet.EIP712Name, "version": kite.Mainnet.EIP712Version},
+				Extra:             map[string]any{"name": kite.Mainnet.EIP712Name, "version": kite.Mainnet.EIP712Version},
 			},
 		},
 	}
@@ -236,17 +242,127 @@ func TestPayPreservesMethodBodyAndHeaders(t *testing.T) {
 	}
 }
 
-func TestNetworkChainID(t *testing.T) {
-	if id, err := networkChainID("eip155:2368"); err != nil || id != 2368 {
-		t.Errorf("networkChainID(eip155:2368) = %d, %v", id, err)
+// ---- hardening: price cap, auto-select, Paid semantics, loose extra ----
+
+func pricedChallenge(network, amount string) PaymentRequired {
+	description := "priced"
+	mimeType := "application/json"
+	return PaymentRequired{
+		X402Version: 2,
+		Resource:    ResourceInfo{URL: "/v1/x", Description: &description, MimeType: &mimeType},
+		Accepts: []PaymentRequirements{{
+			Scheme: "exact", Network: network, Amount: amount,
+			Asset: kite.Testnet.AssetAddress,
+			PayTo: "0x00000000000000000000000000000000000000ff",
+		}},
 	}
-	for _, bad := range []string{"", "2368", "eip155:abc", "bip122:000000000019d668"} {
-		if _, err := networkChainID(bad); err == nil {
-			t.Errorf("networkChainID(%q) = nil error, want error", bad)
+}
+
+func TestPayRefusesAPriceAboveTheDefaultCapBeforeSigning(t *testing.T) {
+	// 5 pieUSD = 5 * 10^18 units, far above the $1 default.
+	endpoint := &paidEndpoint{challenge: pricedChallenge(kite.Testnet.Network, "5000000000000000000")}
+	server := endpoint.start(t)
+	signer, _ := NewSignerFromHex(testPrivateKey)
+
+	result, err := Pay(http.DefaultClient, server.URL, http.MethodGet, nil, nil, signer, -1)
+	if err == nil || !strings.Contains(err.Error(), "per-payment cap") {
+		t.Fatalf("want a cap refusal, got err=%v", err)
+	}
+	if result.Paid || result.Receipt != nil {
+		t.Errorf("nothing must be paid or settled: %v", result)
+	}
+	if len(endpoint.accepted) != 0 {
+		t.Errorf("server received %d payments, want 0 — the refusal must precede signing", len(endpoint.accepted))
+	}
+}
+
+func TestPayCapCanBeRaisedAndDisabled(t *testing.T) {
+	// 0.002 pieUSD is above a 0.001 cap, fine under a raised cap, fine with no cap.
+	for _, tc := range []struct {
+		cap  string
+		want bool
+	}{
+		{"$0.001", false},
+		{"0.01", true},
+		{"0", true},
+	} {
+		endpoint := &paidEndpoint{challenge: pricedChallenge(kite.Testnet.Network, "2000000000000000")}
+		server := endpoint.start(t)
+		signer, _ := NewSignerFromHex(testPrivateKey)
+
+		result, err := Pay(http.DefaultClient, server.URL, http.MethodGet, nil, nil, signer, -1,
+			WithMaxAmountUSD(tc.cap))
+		if tc.want {
+			if err != nil || !result.Paid {
+				t.Errorf("cap %q: want the payment to go through, got paid=%v err=%v", tc.cap, result.Paid, err)
+			}
+		} else if err == nil || !strings.Contains(err.Error(), "per-payment cap") {
+			t.Errorf("cap %q: want a cap refusal, got err=%v", tc.cap, err)
 		}
 	}
 }
 
-// compile-time assertion that Pay uses a clock (kept honest for future
-// refactors of the validity window).
-var _ = time.Now
+func TestPayAutoSelectSkipsNetworksThisToolkitCannotPayOn(t *testing.T) {
+	// A multi-chain endpoint lists a non-Kite EVM chain first. Auto-select
+	// must step over it to the Kite option instead of failing on it.
+	description := "multi"
+	mimeType := "application/json"
+	challenge := PaymentRequired{
+		X402Version: 2,
+		Resource:    ResourceInfo{URL: "/v1/x", Description: &description, MimeType: &mimeType},
+		Accepts: []PaymentRequirements{
+			{Scheme: "exact", Network: "eip155:8453", Amount: "1000000", Asset: "0x4200000000000000000000000000000000000006", PayTo: "0x00000000000000000000000000000000000000ff"},
+			{Scheme: "exact", Network: kite.Testnet.Network, Amount: "1000000000000000", Asset: kite.Testnet.AssetAddress, PayTo: "0x00000000000000000000000000000000000000ff"},
+		},
+	}
+	endpoint := &paidEndpoint{challenge: challenge}
+	server := endpoint.start(t)
+	signer, _ := NewSignerFromHex(testPrivateKey)
+
+	result, err := Pay(http.DefaultClient, server.URL, http.MethodGet, nil, nil, signer, -1)
+	if err != nil {
+		t.Fatalf("Pay: %v", err)
+	}
+	if result.Option != 1 {
+		t.Errorf("auto-select picked option %d, want 1 (the Kite option)", result.Option)
+	}
+	if len(endpoint.accepted) != 1 || endpoint.accepted[0].Accepted.Network != kite.Testnet.Network {
+		t.Errorf("paid the wrong option: %+v", endpoint.accepted)
+	}
+}
+
+func TestPaidIsFalseWhenTheProtectedHandlerFails(t *testing.T) {
+	// The signature verified, but a 500 from the handler means nothing was
+	// settled — the request was not paid for.
+	endpoint := &paidEndpoint{challenge: twoOptionChallenge(), failAfter: http.StatusInternalServerError}
+	server := endpoint.start(t)
+	signer, _ := NewSignerFromHex(testPrivateKey)
+
+	result, err := Pay(http.DefaultClient, server.URL, http.MethodGet, nil, nil, signer, -1)
+	if err != nil {
+		t.Fatalf("Pay: %v", err)
+	}
+	if result.Paid {
+		t.Errorf("a failed handler must not report Paid: %+v", result)
+	}
+	if result.Status != http.StatusInternalServerError || result.Receipt != nil {
+		t.Errorf("result = status %d receipt %v, want 500 and no receipt", result.Status, result.Receipt)
+	}
+}
+
+func TestChallengeExtraMayCarryNonStringValues(t *testing.T) {
+	// The x402 schema allows string and number values in extra; a number in
+	// any option must not fail the whole challenge decode.
+	raw := `{"x402Version":2,"resource":{"url":"/v1/x"},
+	 "accepts":[{"scheme":"exact","network":"eip155:2368","amount":"1",
+	  "asset":"0x38129cf4CE5E183eFF248F42A7D345Bb1B47621A",
+	  "payTo":"0x00000000000000000000000000000000000000ff","maxTimeoutSeconds":60,
+	  "extra":{"name":"pieUSD","version":"1","chainId":2368}}]}`
+	challenge, err := DecodeChallenge(base64.StdEncoding.EncodeToString([]byte(raw)))
+	if err != nil {
+		t.Fatalf("DecodeChallenge: %v", err)
+	}
+	if chainID, ok := challenge.Accepts[0].Extra["chainId"].(float64); !ok || chainID != 2368 {
+		t.Errorf("numeric extra lost: %#v", challenge.Accepts[0].Extra)
+	}
+}

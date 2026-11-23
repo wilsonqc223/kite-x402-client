@@ -33,7 +33,7 @@ func testOption() PaymentRequirements {
 		Asset:             "0x38129cf4CE5E183eFF248F42A7D345Bb1B47621A",
 		PayTo:             "0xC0FFEE0000000000000000000000000000C0FFEE",
 		MaxTimeoutSeconds: 60,
-		Extra:             map[string]string{"name": "pieUSD", "version": "1"},
+		Extra:             map[string]any{"name": "pieUSD", "version": "1"},
 	}
 }
 
@@ -207,5 +207,29 @@ func TestNewSignerFromHexValidation(t *testing.T) {
 	}
 	if _, ok := new(big.Int).SetString("1", 10); !ok {
 		t.Fatal("sanity")
+	}
+}
+
+func TestBuildAndSignRefusesMalformedServerValues(t *testing.T) {
+	// payTo/asset come from the server. HexToAddress would silently pad or
+	// truncate a wrong-length string into a different valid-looking address
+	// and that rewritten address is the one that would get signed — so every
+	// malformed value must be refused instead of normalized.
+	signer := mustSigner(t)
+	for name, mutate := range map[string]func(*PaymentRequirements){
+		"short payTo":     func(o *PaymentRequirements) { o.PayTo = "0x1234" },
+		"long payTo":      func(o *PaymentRequirements) { o.PayTo = "0x" + strings.Repeat("ab", 21) },
+		"non-hex payTo":   func(o *PaymentRequirements) { o.PayTo = "0xzz00000000000000000000000000000000000000" },
+		"short asset":     func(o *PaymentRequirements) { o.Asset = "0xabc" },
+		"empty amount":    func(o *PaymentRequirements) { o.Amount = "" },
+		"negative amount": func(o *PaymentRequirements) { o.Amount = "-5" },
+		"text amount":     func(o *PaymentRequirements) { o.Amount = "lots" },
+	} {
+		option := testOption()
+		mutate(&option)
+		payload, err := signer.BuildAndSign(option, ResourceInfo{URL: "/v1/x"}, time.Unix(1700000000, 0))
+		if err == nil {
+			t.Errorf("%s: want a refusal, got a signed payload paying %s", name, payload.Payload.Authorization.To)
+		}
 	}
 }

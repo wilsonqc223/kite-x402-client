@@ -95,7 +95,9 @@ var tools = []toolDef{
 		Name: "kx402_pay",
 		Description: "Pay an x402-paid endpoint's 402 challenge with an EIP-3009 signature and return " +
 			"the paid body plus the on-chain settlement receipt. Requires KITE_PRIVATE_KEY in the " +
-			"server's environment; the key is never logged or returned.",
+			"server's environment; the key is never logged or returned. Each payment is capped at " +
+			"KITE_MAX_PAYMENT_USD (default $1) by the operator; a pricier challenge is refused " +
+			"before anything is signed, and the cap cannot be changed from a tool call.",
 		InputSchema: objectSchema(map[string]any{
 			"url":    map[string]any{"type": "string", "description": "The endpoint URL to pay."},
 			"option": map[string]any{"type": "integer", "description": "Index of the challenge option to pay; default auto-selects."},
@@ -252,10 +254,23 @@ func toolBalance(args json.RawMessage, proxy string) (toolCallResult, error) {
 	return text(buf.String()), nil
 }
 
+// payCapUSD is the per-payment price cap for the agent. It comes from the
+// operator's environment (KITE_MAX_PAYMENT_USD) and is never readable or
+// changeable through a tool call: an agent that is talked into visiting a
+// hostile endpoint cannot raise its own spending limit.
+func payCapUSD() string {
+	if value := strings.TrimSpace(os.Getenv("KITE_MAX_PAYMENT_USD")); value != "" {
+		return value
+	}
+	return x402.DefaultMaxPaymentUSD
+}
+
 func toolPay(args json.RawMessage, proxy string) (toolCallResult, error) {
+	// option is a pointer so that an explicit 0 (the first advertised
+	// option) is distinguishable from "absent", which means auto-select.
 	var in struct {
 		URL    string `json:"url"`
-		Option int    `json:"option"`
+		Option *int   `json:"option"`
 	}
 	if err := json.Unmarshal(args, &in); err != nil || in.URL == "" {
 		return toolCallResult{}, fmt.Errorf("url is required")
@@ -272,11 +287,13 @@ func toolPay(args json.RawMessage, proxy string) (toolCallResult, error) {
 	if err != nil {
 		return toolCallResult{}, err
 	}
-	option := in.Option
-	if option == 0 {
-		option = -1 // absent means auto-select
+	option := -1
+	if in.Option != nil {
+		option = *in.Option
 	}
-	result, err := x402.Pay(client, in.URL, "GET", nil, nil, signer, option)
+	cap := payCapUSD()
+	result, err := x402.Pay(client, in.URL, "GET", nil, nil, signer, option,
+		x402.WithMaxAmountUSD(cap))
 	if err != nil {
 		return toolCallResult{}, err
 	}

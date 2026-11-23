@@ -4,20 +4,16 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
-	"math/big"
-	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/Chesten223/kite-x402-client/internal/cli"
 	"github.com/Chesten223/kite-x402-client/internal/kite"
-	"github.com/Chesten223/kite-x402-client/internal/rpc"
 	"github.com/Chesten223/kite-x402-client/internal/x402"
 )
 
@@ -39,7 +35,7 @@ func main() {
 	case "receipt":
 		err = cmdReceipt(os.Args[2:])
 	case "version":
-		fmt.Println(versionString())
+		fmt.Println(cli.VersionString())
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -53,31 +49,6 @@ func main() {
 	}
 }
 
-// version is set at build time via -ldflags "-X main.version=…" (see
-// .goreleaser.yml); dev builds report dev.
-var version = "dev"
-
-func versionString() string {
-	return fmt.Sprintf("kx402 %s (github.com/wilsonqc223/kite-x402-client)", version)
-}
-
-// httpClientFor builds the HTTP client for probe/pay/balance. An empty
-// proxy keeps Go's defaults; otherwise the value is a URL like
-// socks5://127.0.0.1:10800 or http://corp-gw:8080 and all traffic (including
-// DNS for socks5h-style remote resolution) flows through it.
-func httpClientFor(proxyURL string, timeout time.Duration) (*http.Client, error) {
-	if proxyURL == "" {
-		return &http.Client{Timeout: timeout}, nil
-	}
-	parsed, err := url.Parse(proxyURL)
-	if err != nil {
-		return nil, fmt.Errorf("parsing -proxy %q: %w", proxyURL, err)
-	}
-	return &http.Client{
-		Timeout:   timeout,
-		Transport: &http.Transport{Proxy: http.ProxyURL(parsed)},
-	}, nil
-}
 func usage() {
 	fmt.Fprint(os.Stderr, `kx402 — x402 client toolkit for the Kite AI chains
 
@@ -112,6 +83,8 @@ func cmdPay(args []string) error {
 	fs.IntVar(option, "option", -1, "index of the payment option to pay (default: auto)")
 	keyFile := fs.String("key-file", "", "private key file (default: $KITE_PRIVATE_KEY)")
 	proxy := fs.String("proxy", "", "egress proxy URL, e.g. socks5://127.0.0.1:10800")
+	maxUSD := fs.String("max-usd", cli.EnvOrDefault("KITE_MAX_PAYMENT_USD", x402.DefaultMaxPaymentUSD),
+		"refuse any single payment above this USD price; 0 disables the cap")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: kx402 pay [flags] <url>")
 		fs.PrintDefaults()
@@ -124,7 +97,7 @@ func cmdPay(args []string) error {
 		os.Exit(2)
 	}
 
-	key, err := loadKey(*keyFile)
+	key, err := cli.LoadKey(*keyFile)
 	if err != nil {
 		return err
 	}
@@ -137,11 +110,12 @@ func cmdPay(args []string) error {
 		return err
 	}
 
-	httpClient, err := httpClientFor(*proxy, 60*time.Second)
+	httpClient, err := cli.HTTPClientFor(*proxy, 60*time.Second)
 	if err != nil {
 		return err
 	}
-	result, err := x402.Pay(httpClient, fs.Arg(0), *method, body, headers, signer, *option)
+	result, err := x402.Pay(httpClient, fs.Arg(0), *method, body, headers, signer, *option,
+		x402.WithMaxAmountUSD(*maxUSD))
 	if err != nil {
 		return err
 	}
@@ -149,10 +123,10 @@ func cmdPay(args []string) error {
 	if result.Paid {
 		fmt.Fprintf(os.Stderr, "paid option %d as %s\n", result.Option, signer.Address())
 		if result.Receipt != nil {
-			chain, known := chainByNetwork(result.Receipt.Network)
+			chain, known := cli.ChainByNetwork(result.Receipt.Network)
 			fmt.Fprintf(os.Stderr, "settled: tx %s on %s", result.Receipt.Transaction, result.Receipt.Network)
 			if result.Receipt.Amount != nil {
-				fmt.Fprintf(os.Stderr, " (%s %s)", formatUnits(*result.Receipt.Amount, chain, known), chain.AssetSymbol)
+				fmt.Fprintf(os.Stderr, " (%s %s)", cli.FormatUnits(*result.Receipt.Amount, chain, known), chain.AssetSymbol)
 			}
 			fmt.Fprintln(os.Stderr)
 		}
@@ -187,26 +161,6 @@ func (h *headerList) Set(value string) error {
 	return nil
 }
 
-// loadKey reads the wallet key from a file or the environment.
-func loadKey(path string) (string, error) {
-	if path != "" {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return "", fmt.Errorf("reading key file: %w", err)
-		}
-		key := strings.TrimSpace(string(raw))
-		if key == "" {
-			return "", fmt.Errorf("key file %s is empty", path)
-		}
-		return key, nil
-	}
-	key := strings.TrimSpace(os.Getenv("KITE_PRIVATE_KEY"))
-	if key == "" {
-		return "", fmt.Errorf("no wallet: set KITE_PRIVATE_KEY or pass -key-file")
-	}
-	return key, nil
-}
-
 // readBody resolves the -d flag: @file reads a file, - reads stdin, and
 // anything else is a literal body string.
 func readBody(spec string) ([]byte, error) {
@@ -227,8 +181,9 @@ func readBody(spec string) ([]byte, error) {
 func cmdProbe(args []string) error {
 	fs := flag.NewFlagSet("probe", flag.ExitOnError)
 	proxy := fs.String("proxy", "", "egress proxy URL, e.g. socks5://127.0.0.1:10800")
+	asJSON := fs.Bool("json", false, "print the decoded challenge as JSON")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: kx402 probe [-proxy URL] <url>")
+		fmt.Fprintln(os.Stderr, "usage: kx402 probe [-json] [-proxy URL] <url>")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -238,58 +193,14 @@ func cmdProbe(args []string) error {
 		fs.Usage()
 		os.Exit(2)
 	}
-	httpClient, err := httpClientFor(*proxy, 30*time.Second)
+	httpClient, err := cli.HTTPClientFor(*proxy, 30*time.Second)
 	if err != nil {
 		return err
 	}
-	return probe(httpClient, fs.Arg(0), os.Stdout)
-}
-
-func probe(client *http.Client, rawURL string, out io.Writer) error {
-	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
-	if err != nil {
-		return fmt.Errorf("building request: %w", err)
+	if *asJSON {
+		return cli.ProbeJSON(httpClient, fs.Arg(0), os.Stdout)
 	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("fetching %s: %w", rawURL, err)
-	}
-	defer resp.Body.Close()
-
-	header := resp.Header.Get(x402.HeaderPaymentRequired)
-	if resp.StatusCode != http.StatusPaymentRequired || header == "" {
-		return fmt.Errorf(
-			"%s answered %s with no PAYMENT-REQUIRED header — not an x402 paid endpoint",
-			rawURL, resp.Status)
-	}
-
-	challenge, err := x402.DecodeChallenge(header)
-	if err != nil {
-		return fmt.Errorf("decoding challenge: %w", err)
-	}
-
-	fmt.Fprintf(out, "x402 v%d challenge from %s\n", challenge.X402Version, rawURL)
-	if challenge.Resource.Description != nil {
-		fmt.Fprintf(out, "resource: %s\n", *challenge.Resource.Description)
-	}
-	if challenge.Error != nil {
-		fmt.Fprintf(out, "error:    %s\n", *challenge.Error)
-	}
-	fmt.Fprintf(out, "%d payment option(s):\n", len(challenge.Accepts))
-	for i, option := range challenge.Accepts {
-		chain, known := chainByNetwork(option.Network)
-		fmt.Fprintf(out, "\n  [%d] %s\n", i, option.Network)
-		fmt.Fprintf(out, "      price:  %s %s\n",
-			formatUnits(option.Amount, chain, known), chain.AssetSymbol)
-		fmt.Fprintf(out, "      asset:  %s\n", option.Asset)
-		fmt.Fprintf(out, "      payTo:  %s\n", option.PayTo)
-		fmt.Fprintf(out, "      scheme: %s (max timeout %ds)\n",
-			option.Scheme, option.MaxTimeoutSeconds)
-		if name, ok := option.Extra["name"]; ok {
-			fmt.Fprintf(out, "      domain: %s v%s\n", name, option.Extra["version"])
-		}
-	}
-	return nil
+	return cli.Probe(httpClient, fs.Arg(0), os.Stdout)
 }
 
 // cmdReceipt decodes a base64 PAYMENT-RESPONSE header value.
@@ -337,9 +248,9 @@ func cmdReceipt(args []string) error {
 		fmt.Printf("payer:       %s\n", *receipt.Payer)
 	}
 	if receipt.Amount != nil {
-		chain, known := chainByNetwork(receipt.Network)
+		chain, known := cli.ChainByNetwork(receipt.Network)
 		fmt.Printf("amount:      %s %s\n",
-			formatUnits(*receipt.Amount, chain, known), chain.AssetSymbol)
+			cli.FormatUnits(*receipt.Amount, chain, known), chain.AssetSymbol)
 	}
 	if receipt.ErrorReason != nil {
 		fmt.Printf("error:       %s\n", *receipt.ErrorReason)
@@ -348,44 +259,6 @@ func cmdReceipt(args []string) error {
 		fmt.Printf("message:     %s\n", *receipt.ErrorMessage)
 	}
 	return nil
-}
-
-// chainByNetwork resolves a CAIP-2 id to a Kite chain; unknown networks get
-// the zero chain and known=false so callers can fall back to raw units.
-func chainByNetwork(network string) (kite.Chain, bool) {
-	chain, err := kite.ByNetwork(network)
-	if err != nil {
-		return kite.Chain{}, false
-	}
-	return chain, true
-}
-
-// formatUnits renders an integer smallest-unit amount as a decimal USD-style
-// string when the chain is known, falling back to the raw integer.
-func formatUnits(amount string, chain kite.Chain, known bool) string {
-	if !known {
-		return fmt.Sprintf("%s (raw units)", amount)
-	}
-	return unitsToDecimal(amount, int(chain.AssetDecimals))
-}
-
-// unitsToDecimal renders an integer smallest-unit amount with the given
-// number of fractional digits (integer string math, no floats).
-func unitsToDecimal(amount string, decimals int) string {
-	units, ok := new(big.Int).SetString(amount, 10)
-	if !ok {
-		return amount
-	}
-	if decimals == 0 {
-		return units.String()
-	}
-	s := units.String()
-	for len(s) <= decimals {
-		s = "0" + s
-	}
-	s = s[:len(s)-decimals] + "." + s[len(s)-decimals:]
-	s = strings.TrimRight(s, "0")
-	return strings.TrimSuffix(s, ".")
 }
 
 // cmdBalance shows native and stablecoin balances of an address on one Kite
@@ -423,8 +296,8 @@ func cmdBalance(args []string) error {
 	address := ""
 	if fs.NArg() == 1 {
 		address = fs.Arg(0)
-	} else if key := strings.TrimSpace(envOrDefault("KITE_PRIVATE_KEY", "")); key != "" || *keyFile != "" {
-		loaded, err := loadKey(*keyFile)
+	} else if key := strings.TrimSpace(cli.EnvOrDefault("KITE_PRIVATE_KEY", "")); key != "" || *keyFile != "" {
+		loaded, err := cli.LoadKey(*keyFile)
 		if err != nil {
 			return err
 		}
@@ -438,11 +311,11 @@ func cmdBalance(args []string) error {
 		return fmt.Errorf("pass an address, or set KITE_PRIVATE_KEY / -key-file to use the wallet's")
 	}
 
-	httpClient, err := httpClientFor(*proxyFlag, 15*time.Second)
+	httpClient, err := cli.HTTPClientFor(*proxyFlag, 15*time.Second)
 	if err != nil {
 		return err
 	}
-	return balanceOut(chain, chain.RPCURL, address, os.Stdout, httpClient)
+	return cli.BalanceOut(chain, chain.RPCURL, address, os.Stdout, httpClient)
 }
 
 // cmdWallet prints the wallet's address (from the key) and, unless
@@ -459,7 +332,7 @@ func cmdWallet(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	key, err := loadKey(*keyFile)
+	key, err := cli.LoadKey(*keyFile)
 	if err != nil {
 		return err
 	}
@@ -475,54 +348,13 @@ func cmdWallet(args []string) error {
 	fmt.Println("fund it (testnet faucet drops 0.5 KITE): https://faucet.gokite.ai")
 	for _, chain := range []kite.Chain{kite.Testnet, kite.Mainnet} {
 		fmt.Println()
-		httpClient, err := httpClientFor("", 15*time.Second)
+		httpClient, err := cli.HTTPClientFor("", 15*time.Second)
 		if err != nil {
 			return err
 		}
-		if err := balanceOut(chain, chain.RPCURL, signer.Address(), os.Stdout, httpClient); err != nil {
+		if err := cli.BalanceOut(chain, chain.RPCURL, signer.Address(), os.Stdout, httpClient); err != nil {
 			fmt.Fprintf(os.Stderr, "kx402: %s: %v\n", chain.Network, err)
 		}
 	}
 	return nil
-}
-
-// balanceOut queries one chain and prints the wallet picture.
-func balanceOut(chain kite.Chain, rpcURL, address string, out io.Writer, httpClient *http.Client) error {
-	client := rpc.New(rpcURL).WithHTTP(httpClient)
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-
-	chainID, err := client.ChainID(ctx)
-	if err != nil {
-		return fmt.Errorf("asking %s for the chain id: %w", chain.RPCURL, err)
-	}
-	if chainID != chain.ChainID {
-		return fmt.Errorf("%s reports chain id %d, expected %d — is -net right?",
-			chain.RPCURL, chainID, chain.ChainID)
-	}
-	block, err := client.BlockNumber(ctx)
-	if err != nil {
-		return fmt.Errorf("fetching block number: %w", err)
-	}
-	native, err := client.NativeBalance(ctx, address)
-	if err != nil {
-		return fmt.Errorf("fetching native balance: %w", err)
-	}
-	stable, err := client.ERC20BalanceOf(ctx, chain.AssetAddress, address)
-	if err != nil {
-		return fmt.Errorf("fetching %s balance: %w", chain.AssetSymbol, err)
-	}
-
-	fmt.Fprintf(out, "%s (chain %d, block %d)\n", chain.Network, chainID, block)
-	fmt.Fprintf(out, "%s  %s KITE\n", address, unitsToDecimal(native.String(), 18))
-	fmt.Fprintf(out, "%s  %s %s\n",
-		strings.Repeat(" ", len(address)), unitsToDecimal(stable.String(), int(chain.AssetDecimals)), chain.AssetSymbol)
-	return nil
-}
-
-func envOrDefault(key, fallback string) string {
-	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-		return value
-	}
-	return fallback
 }

@@ -140,6 +140,21 @@ func (s *Signer) BuildAndSign(
 		return PaymentPayload{}, fmt.Errorf("cannot pay on %s with this toolkit: %w", option.Network, err)
 	}
 
+	// The payee and asset come from the server, i.e. from an untrusted
+	// challenge. HexToAddress never fails — it silently pads or truncates —
+	// so an address that is not exactly 20 bytes must be refused here rather
+	// than normalized into a different, valid-looking address that would
+	// then be the one signed.
+	if !common.IsHexAddress(option.PayTo) {
+		return PaymentPayload{}, fmt.Errorf("the challenge advertises an invalid payTo %q", option.PayTo)
+	}
+	if !common.IsHexAddress(option.Asset) {
+		return PaymentPayload{}, fmt.Errorf("the challenge advertises an invalid asset %q", option.Asset)
+	}
+	if _, ok := new(big.Int).SetString(option.Amount, 10); !ok || option.Amount == "" || option.Amount[0] == '-' {
+		return PaymentPayload{}, fmt.Errorf("the challenge advertises an invalid amount %q", option.Amount)
+	}
+
 	// The facilitator validates EVM addresses with a strict (EIP-55
 	// checksum) parser, so echo every address checksummed.
 	option.PayTo = common.HexToAddress(option.PayTo).Hex()

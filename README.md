@@ -79,6 +79,15 @@ settled: tx 0xabc... on eip155:2368 (0.001 pieUSD)
 `socks5://127.0.0.1:10800`) so the client works from networks where paid
 APIs are only reachable through an egress proxy.
 
+**Price cap.** No single payment costs more than **$1** unless you say
+otherwise: an option priced above the cap is refused *before anything is
+signed*. Raise it per call with `-max-usd 10` (or `KITE_MAX_PAYMENT_USD`),
+or disable it with `-max-usd 0`. x402 prices are fractions of a cent, so a
+dollar is far above any legitimate per-call price — and it is what stops a
+hostile endpoint, or a prompt-injected agent, from draining a wallet in one
+request. The challenge's `payTo` and `asset` must be well-formed 20-byte
+addresses; anything else is refused rather than normalized.
+
 `pay` fetches the challenge, signs an EIP-3009 `transferWithAuthorization`
 for the option you pick (`-o N`, default: the first option on a known Kite
 network), retries the request with the `PAYMENT-SIGNATURE` header, and
@@ -119,6 +128,10 @@ without leaving their chat:
 ```
 
 The key lives in the server environment and is never returned to the agent.
+Each `kx402_pay` is capped at `KITE_MAX_PAYMENT_USD` (default **$1**) by the
+operator — the cap cannot be read or raised from a tool call, so an agent
+cannot talk itself into overspending. A key file other users can read
+(mode 0644) is refused; keep it `0600`.
 
 ## Networks
 

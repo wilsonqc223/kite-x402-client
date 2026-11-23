@@ -44,7 +44,7 @@ func main() {
 		Asset:             kite.Testnet.AssetAddress,
 		PayTo:             "0x000000000000000000000000000000000000c0ff",
 		MaxTimeoutSeconds: 60,
-		Extra:             map[string]string{"name": kite.Testnet.EIP712Name, "version": kite.Testnet.EIP712Version},
+		Extra:             map[string]any{"name": kite.Testnet.EIP712Name, "version": kite.Testnet.EIP712Version},
 	}
 
 	payload, err := signer.BuildAndSign(option, x402.ResourceInfo{

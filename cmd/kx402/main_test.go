@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/Chesten223/kite-x402-client/internal/cli"
 	"github.com/Chesten223/kite-x402-client/internal/kite"
 	"github.com/Chesten223/kite-x402-client/internal/x402"
 )
@@ -45,7 +46,7 @@ func TestProbeDecodesChallenge(t *testing.T) {
 	defer server.Close()
 
 	var out strings.Builder
-	if err := probe(http.DefaultClient, server.URL+"/v1/forecast", &out); err != nil {
+	if err := cli.Probe(http.DefaultClient, server.URL+"/v1/forecast", &out); err != nil {
 		t.Fatalf("probe: %v", err)
 	}
 
@@ -71,7 +72,7 @@ func TestProbeRejectsOrdinaryEndpoint(t *testing.T) {
 	defer server.Close()
 
 	var out strings.Builder
-	if err := probe(http.DefaultClient, server.URL, &out); err == nil {
+	if err := cli.Probe(http.DefaultClient, server.URL, &out); err == nil {
 		t.Error("probe on a free endpoint = nil error, want error")
 	}
 }
@@ -89,9 +90,9 @@ func TestFormatUnits(t *testing.T) {
 		{"7", "eip155:9999", "7 (raw units)"},
 	}
 	for _, tc := range cases {
-		chain, known := chainByNetwork(tc.network)
-		if got := formatUnits(tc.amount, chain, known); got != tc.want {
-			t.Errorf("formatUnits(%q, %s) = %q, want %q", tc.amount, tc.network, got, tc.want)
+		chain, known := cli.ChainByNetwork(tc.network)
+		if got := cli.FormatUnits(tc.amount, chain, known); got != tc.want {
+			t.Errorf("cli.FormatUnits(%q, %s) = %q, want %q", tc.amount, tc.network, got, tc.want)
 		}
 	}
 }
@@ -120,7 +121,7 @@ func TestBalanceOut(t *testing.T) {
 	defer server.Close()
 
 	var out strings.Builder
-	if err := balanceOut(kite.Testnet, server.URL, "0xAbC", &out, http.DefaultClient); err != nil {
+	if err := cli.BalanceOut(kite.Testnet, server.URL, "0xAbC", &out, http.DefaultClient); err != nil {
 		t.Fatalf("balanceOut: %v", err)
 	}
 	got := out.String()
@@ -141,16 +142,16 @@ func TestBalanceOutRejectsWrongChain(t *testing.T) {
 		})
 	}))
 	defer server.Close()
-	if err := balanceOut(kite.Testnet, server.URL, "0xAbC", &strings.Builder{}, http.DefaultClient); err == nil {
+	if err := cli.BalanceOut(kite.Testnet, server.URL, "0xAbC", &strings.Builder{}, http.DefaultClient); err == nil {
 		t.Error("balanceOut with mismatched chain id = nil error, want error")
 	}
 }
 
 func TestChainByNetworkUnknown(t *testing.T) {
-	if _, known := chainByNetwork("eip155:1"); known {
-		t.Error("chainByNetwork(eip155:1) known, want unknown")
+	if _, known := cli.ChainByNetwork("eip155:1"); known {
+		t.Error("cli.ChainByNetwork(eip155:1) known, want unknown")
 	}
-	if chain, known := chainByNetwork("eip155:2368"); !known || chain != kite.Testnet {
-		t.Errorf("chainByNetwork(eip155:2368) = %v, %v", chain, known)
+	if chain, known := cli.ChainByNetwork("eip155:2368"); !known || chain != kite.Testnet {
+		t.Errorf("cli.ChainByNetwork(eip155:2368) = %v, %v", chain, known)
 	}
 }

@@ -23,6 +23,10 @@ Or from a checkout:
 go build -o kx402 ./cmd/kx402
 ```
 
+Check what you got: `kx402 version` reports the version the binary was built
+at — `v0.3.1` for a tagged install, a commit-identifying pseudo-version for
+`@main` or `@<commit>`.
+
 ## Usage
 
 ### Probe a paid endpoint

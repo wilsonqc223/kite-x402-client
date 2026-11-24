@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -21,12 +22,39 @@ import (
 	"github.com/wilsonqc223/kite-x402-client/internal/x402"
 )
 
-// Version is set at build time via -ldflags "-X …"; dev builds report dev.
+// Version is set at build time via -ldflags "-X …" for the release binaries.
+// It stays "dev" when a build does not set it, and `go install pkg@version` —
+// the README's own install command — never can: it takes no -ldflags. Those
+// binaries are not unversioned, though. Go records the module version in
+// them, and BuildVersion reads it back.
 var Version = "dev"
 
-// VersionString is what `kx402 version` and the MCP serverInfo report.
+// BuildVersion is the version this binary reports: Version when the build set
+// it, otherwise whatever Go recorded in the binary. For `go install
+// pkg@version` that is the requested version — a tag such as v0.3.0, or a
+// pseudo-version for a commit or branch tip. For a build from a checkout it
+// is the tag or pseudo-version Go derives from the checkout's git state,
+// with a "+dirty" suffix when the tree has uncommitted changes. It is "dev"
+// only when nothing is on record.
+func BuildVersion() string {
+	if Version != "dev" {
+		return Version
+	}
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return Version
+	}
+	// "(devel)" is what go build and go test record when no version can be
+	// derived — a checkout without VCS metadata, or a shallow CI clone.
+	if v := info.Main.Version; v != "" && v != "(devel)" {
+		return v
+	}
+	return Version
+}
+
+// VersionString is what `kx402 version` prints.
 func VersionString() string {
-	return fmt.Sprintf("kx402 %s (github.com/wilsonqc223/kite-x402-client)", Version)
+	return fmt.Sprintf("kx402 %s (github.com/wilsonqc223/kite-x402-client)", BuildVersion())
 }
 
 // HTTPClientFor builds an HTTP client. An empty proxy keeps Go's defaults;

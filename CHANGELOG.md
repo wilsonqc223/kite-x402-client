@@ -8,6 +8,23 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 Nothing yet.
 
+## [v0.3.1] - 2026-11-24
+
+### Fixed
+
+- Binaries installed with `go install …@version` — the README's install
+  command — answered `dev` to `kx402 version`, and the MCP server advertised
+  `dev` in its `serverInfo`. `go install` takes no `-ldflags`, so the release
+  stamp never reached them. Both now fall back to the version Go records in
+  the binary: the tag or pseudo-version for an installed binary, and what Go
+  derives from the checkout's git state (`v0.3.1+dirty`) for a source build.
+  Release binaries from the releases page are unaffected.
+- Caught by the release workflow, which installs the tag it just published
+  the way the README says and fails when the installed `kx402` does not
+  report that version. v0.3.0's release run failed exactly that check; its
+  release binaries are correct, only `go install` users of v0.3.0 saw `dev`.
+
+
 ## [v0.3.0] - 2026-11-24
 
 ### Fixed
@@ -124,6 +141,7 @@ First release.
   behind a mock facilitator; GitHub Actions CI and tag-triggered
   cross-platform releases.
 
+[v0.3.1]: https://github.com/wilsonqc223/kite-x402-client/releases/tag/v0.3.1
 [v0.3.0]: https://github.com/wilsonqc223/kite-x402-client/releases/tag/v0.3.0
 [v0.2.0]: https://github.com/wilsonqc223/kite-x402-client/releases/tag/v0.2.0
 [v0.1.0]: https://github.com/wilsonqc223/kite-x402-client/releases/tag/v0.1.0

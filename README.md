@@ -27,6 +27,15 @@ Check what you got: `kx402 version` reports the version the binary was built
 at — `v0.3.1` for a tagged install, a commit-identifying pseudo-version for
 `@main` or `@<commit>`.
 
+After a fresh release, module proxies take a little while to list the new
+tag, and `@latest` then installs the previous version or fails. Name the
+version until they catch up — the newest tag on the
+[releases page](https://github.com/wilsonqc223/kite-x402-client/releases):
+
+```bash
+go install github.com/wilsonqc223/kite-x402-client/cmd/kx402@v0.3.1
+```
+
 ## Usage
 
 ### Probe a paid endpoint

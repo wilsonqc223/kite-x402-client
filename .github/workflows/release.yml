@@ -39,6 +39,26 @@ jobs:
           done
           bin="$(go env GOPATH)/bin"
           test -x "$bin/kx402" && test -x "$bin/kx402-mcp"
-          "$bin/kx402" version
-          "$bin/kx402" version | grep -q "${GITHUB_REF_NAME#v}" \
-            || { echo "::error::the installed kx402 does not report ${GITHUB_REF_NAME}"; exit 1; }
+          installed="$("$bin/kx402" version)"
+          echo "$installed"
+          test "$installed" = "kx402 ${GITHUB_REF_NAME} (github.com/${GITHUB_REPOSITORY,,})" \
+            || { echo "::error::the installed kx402 reports '$installed', expected ${GITHUB_REF_NAME}"; exit 1; }
+      - name: The release archive reports the same version as the installed binary
+        run: |
+          # The archives are stamped through GoReleaser's own template, which
+          # is not the path the step above takes. A release binary that says
+          # "0.3.1" while `go install` says "v0.3.1" is one program reporting
+          # two versions, so both binaries from the archive are compared with
+          # the installed one.
+          archive="$(ls dist/kx402_*_linux_amd64.tar.gz)"
+          mkdir /tmp/kx402-archive && tar -xzf "$archive" -C /tmp/kx402-archive
+          packed="$(find /tmp/kx402-archive -type f -name kx402 | head -1)"
+          mcp="$(find /tmp/kx402-archive -type f -name kx402-mcp | head -1)"
+          test -n "$packed" && test -n "$mcp"
+          "$packed" version
+          installed_kx402="$(go env GOPATH)/bin/kx402"
+          test "$("$packed" version)" = "$("$installed_kx402" version)" \
+            || { echo "::error::the archive's kx402 and the installed kx402 report different versions"; exit 1; }
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"release","version":"0"}}}' \
+            | "$mcp" serve | grep -q "\"version\":\"${GITHUB_REF_NAME}\"" \
+            || { echo "::error::the archive's kx402-mcp does not report ${GITHUB_REF_NAME}"; exit 1; }

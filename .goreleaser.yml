@@ -5,13 +5,18 @@ project_name: kx402
 # Both binaries take their version from internal/cli.Version. (cmd/kx402
 # used to carry its own `main.version`; it moved into internal/cli when the
 # CLI and the MCP server started sharing that package.)
+#
+# The stamp is the tag, not {{.Version}}: GoReleaser's Version drops the
+# leading "v", but `go install pkg@version` and the build info both report
+# "v0.3.1". One program should not report two different version strings
+# depending on how it was installed.
 builds:
   - id: kx402
     main: ./cmd/kx402
     binary: kx402
     env: [CGO_ENABLED=0]
     ldflags:
-      - -s -w -X github.com/wilsonqc223/kite-x402-client/internal/cli.Version={{.Version}}
+      - -s -w -X github.com/wilsonqc223/kite-x402-client/internal/cli.Version={{.Tag}}
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
   - id: kx402-mcp
@@ -19,7 +24,7 @@ builds:
     binary: kx402-mcp
     env: [CGO_ENABLED=0]
     ldflags:
-      - -s -w -X github.com/wilsonqc223/kite-x402-client/internal/cli.Version={{.Version}}
+      - -s -w -X github.com/wilsonqc223/kite-x402-client/internal/cli.Version={{.Tag}}
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
 

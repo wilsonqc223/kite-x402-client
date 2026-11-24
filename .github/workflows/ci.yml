@@ -13,6 +13,18 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.24"
+      - name: Module path is this repository's path
+        run: |
+          # Building in place never reads the module path, so a stale one
+          # passes every other check — v0.1.0 and v0.2.0 shipped with the
+          # path of a different account and `go install …@version` failed
+          # for everyone. `go install`, `go get` and any import only work
+          # when go.mod declares the repository's canonical path.
+          expected="github.com/${GITHUB_REPOSITORY,,}"
+          actual="$(go list -m)"
+          echo "go.mod: $actual"
+          test "$actual" = "$expected" \
+            || { echo "::error::go.mod declares $actual, but this repository is $expected"; exit 1; }
       - name: Vet
         run: go vet ./...
       - name: Test

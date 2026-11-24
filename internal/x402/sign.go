@@ -15,7 +15,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/signer/core/apitypes"
 
-	"github.com/Chesten223/kite-x402-client/internal/kite"
+	"github.com/wilsonqc223/kite-x402-client/internal/kite"
 )
 
 // Signer signs x402 payments with an EIP-3009 transferWithAuthorization

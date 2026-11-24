@@ -20,8 +20,8 @@ import (
 
 	"github.com/ethereum/go-ethereum/crypto"
 
-	"github.com/Chesten223/kite-x402-client/internal/kite"
-	"github.com/Chesten223/kite-x402-client/internal/x402"
+	"github.com/wilsonqc223/kite-x402-client/internal/kite"
+	"github.com/wilsonqc223/kite-x402-client/internal/x402"
 )
 
 func main() {

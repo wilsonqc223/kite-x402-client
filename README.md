@@ -14,7 +14,7 @@ missing client side: `curl`, but it speaks x402.
 ## Install
 
 ```bash
-go install github.com/Chesten223/kite-x402-client/cmd/kx402@latest
+go install github.com/wilsonqc223/kite-x402-client/cmd/kx402@latest
 ```
 
 Or from a checkout:

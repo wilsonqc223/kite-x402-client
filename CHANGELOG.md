@@ -6,6 +6,26 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [v0.3.0] - 2026-11-24
+
+### Fixed
+
+- **The module path is now the repository's path.** `go.mod` declared
+  `github.com/Chesten223/kite-x402-client`, left over from before the
+  project had its own account, so `go install …@latest` — the README's own
+  install command — failed with "module declares its path as … but was
+  required as …", and nobody could import the packages. v0.1.0 and v0.2.0
+  carry the stale path and cannot be installed with `go install`; use their
+  release binaries or move to this version. Every import now points at
+  `github.com/wilsonqc223/kite-x402-client`. Nothing else changes for people
+  who build from a checkout.
+- CI now refuses a module path that differs from the repository's path, and
+  the release workflow runs the README's `go install` for the tag it just
+  published. Neither the in-place builds nor the release pipeline read the
+  module path before, which is how the stale one shipped twice.
+
 ### Added
 
 - `kx402 pay -dry-run`: one unpaid request, then a report of what `pay`
@@ -104,5 +124,6 @@ First release.
   behind a mock facilitator; GitHub Actions CI and tag-triggered
   cross-platform releases.
 
+[v0.3.0]: https://github.com/wilsonqc223/kite-x402-client/releases/tag/v0.3.0
 [v0.2.0]: https://github.com/wilsonqc223/kite-x402-client/releases/tag/v0.2.0
 [v0.1.0]: https://github.com/wilsonqc223/kite-x402-client/releases/tag/v0.1.0

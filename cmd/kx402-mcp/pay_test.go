@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/Chesten223/kite-x402-client/internal/kite"
+	"github.com/wilsonqc223/kite-x402-client/internal/kite"
 )
 
 // twoChainChallenge advertises a non-Kite EVM chain first and Kite second,

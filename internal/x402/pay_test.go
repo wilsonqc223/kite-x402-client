@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/Chesten223/kite-x402-client/internal/kite"
+	"github.com/wilsonqc223/kite-x402-client/internal/kite"
 )
 
 // paidEndpoint is a mock x402 resource server: it challenges unpaid

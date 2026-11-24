@@ -23,3 +23,22 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: The published version installs the way users install it
+        run: |
+          # Release binaries are built in place, which never exercises the
+          # module path. This is the command from the README, run for the
+          # tag that was just published. Fetch straight from the repository
+          # and skip the checksum database so a fresh tag cannot fail on
+          # proxy or sumdb propagation.
+          export GOPROXY=direct GONOSUMDB='github.com/wilsonqc223/*'
+          module="github.com/${GITHUB_REPOSITORY,,}"
+          for attempt in 1 2 3 4 5 6; do
+            if go install "$module/cmd/kx402@${GITHUB_REF_NAME}" \
+               && go install "$module/cmd/kx402-mcp@${GITHUB_REF_NAME}"; then break; fi
+            echo "attempt $attempt failed; waiting for the tag to be resolvable"; sleep 10
+          done
+          bin="$(go env GOPATH)/bin"
+          test -x "$bin/kx402" && test -x "$bin/kx402-mcp"
+          "$bin/kx402" version
+          "$bin/kx402" version | grep -q "${GITHUB_REF_NAME#v}" \
+            || { echo "::error::the installed kx402 does not report ${GITHUB_REF_NAME}"; exit 1; }

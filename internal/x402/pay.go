@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/Chesten223/kite-x402-client/internal/kite"
+	"github.com/wilsonqc223/kite-x402-client/internal/kite"
 )
 
 // DefaultMaxPaymentUSD caps what a single payment may cost unless the

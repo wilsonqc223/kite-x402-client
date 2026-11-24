@@ -6,17 +6,19 @@ project_name: kx402
 # used to carry its own `main.version`; it moved into internal/cli when the
 # CLI and the MCP server started sharing that package.)
 #
-# The stamp is the tag, not {{.Version}}: GoReleaser's Version drops the
-# leading "v", but `go install pkg@version` and the build info both report
-# "v0.3.1". One program should not report two different version strings
-# depending on how it was installed.
+# The stamp is "v" + {{.Version}}. Neither raw value works alone: {{.Version}}
+# drops the "v" (so archives up to v0.3.1 printed "0.3.1" while `go install`
+# printed "v0.3.1"), and {{.Tag}} is the previous release's tag in a snapshot
+# build, where the version is e.g. "0.3.1-SNAPSHOT-<sha>" (a snapshot then
+# claimed to be v0.3.1). Tags are "v" + version, so on a release this is the
+# tag, and the release workflow checks the binaries against it exactly.
 builds:
   - id: kx402
     main: ./cmd/kx402
     binary: kx402
     env: [CGO_ENABLED=0]
     ldflags:
-      - -s -w -X github.com/wilsonqc223/kite-x402-client/internal/cli.Version={{.Tag}}
+      - '-s -w -X github.com/wilsonqc223/kite-x402-client/internal/cli.Version={{ printf "v%s" .Version }}'
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
   - id: kx402-mcp
@@ -24,7 +26,7 @@ builds:
     binary: kx402-mcp
     env: [CGO_ENABLED=0]
     ldflags:
-      - -s -w -X github.com/wilsonqc223/kite-x402-client/internal/cli.Version={{.Tag}}
+      - '-s -w -X github.com/wilsonqc223/kite-x402-client/internal/cli.Version={{ printf "v%s" .Version }}'
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
 

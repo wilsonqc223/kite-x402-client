@@ -100,10 +100,16 @@ jobs:
           shopt -s nullglob
           linux=(dist/kx402_*_linux_amd64.tar.gz)
           mkdir -p /tmp/kx402-dist && tar xzf "${linux[0]}" -C /tmp/kx402-dist
+          # GoReleaser records the version it built; the binaries must report
+          # exactly that, with the "v" that `go install` also reports. A
+          # snapshot stamped with the previous tag ({{.Tag}}) and a release
+          # stamped without its "v" ({{.Version}}) both fail here.
+          want="v$(python3 -c 'import json; print(json.load(open("dist/metadata.json"))["version"])')"
+          echo "GoReleaser built $want"
           /tmp/kx402-dist/kx402 version
-          /tmp/kx402-dist/kx402 version | grep -q 'SNAPSHOT' \
-            || { echo "::error::version was not injected into the CLI"; exit 1; }
+          test "$(/tmp/kx402-dist/kx402 version)" = "kx402 $want (github.com/${GITHUB_REPOSITORY,,})" \
+            || { echo "::error::the packed kx402 does not report $want"; exit 1; }
           printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
             | /tmp/kx402-dist/kx402-mcp \
-            | grep -q '"name":"kx402"' \
-            || { echo "::error::kx402-mcp did not complete the MCP handshake"; exit 1; }
+            | grep -q "\"serverInfo\":{\"name\":\"kx402\",\"version\":\"$want\"}" \
+            || { echo "::error::kx402-mcp did not report $want in its handshake"; exit 1; }

@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- `kx402 pay -dry-run`: one unpaid request, then a report of what `pay`
+  would sign — the option, its price in tokens and atomic units, the payee,
+  and the price-cap verdict. No wallet is loaded and nothing is signed, so
+  it works without a key and is safe against untrusted endpoints. Exits `3`
+  when `pay` would refuse.
+- `x402.Inspect`: the read-only half of `x402.Pay` for library users; `Pay`
+  and `Inspect` now share one implementation of the request, option
+  selection and cap check, so a dry run cannot disagree with a real one.
+
 ## [v0.2.0] - 2026-11-23
 
 ### Fixed — security

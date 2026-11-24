@@ -155,3 +155,77 @@ func TestChainByNetworkUnknown(t *testing.T) {
 		t.Errorf("cli.ChainByNetwork(eip155:2368) = %v, %v", chain, known)
 	}
 }
+
+// ---- pay -dry-run ----
+
+func dryRunEndpoint(t *testing.T, amount string) *httptest.Server {
+	t.Helper()
+	challenge := map[string]any{
+		"x402Version": 2,
+		"resource":    map[string]any{"url": "/v1/x", "description": "d", "mimeType": "application/json"},
+		"accepts": []any{map[string]any{
+			"scheme": "exact", "network": "eip155:2368", "amount": amount,
+			"asset": "0x38129cf4CE5E183eFF248F42A7D345Bb1B47621A",
+			"payTo": "0x00000000000000000000000000000000000000ff", "maxTimeoutSeconds": 60,
+			"extra": map[string]any{"name": "pieUSD", "version": "1"},
+		}},
+	}
+	encoded := base64.StdEncoding.EncodeToString(func() []byte { raw, _ := json.Marshal(challenge); return raw }())
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("PAYMENT-SIGNATURE") != "" {
+			t.Errorf("dry run sent a signed payment to %s", r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("PAYMENT-REQUIRED", encoded)
+		w.WriteHeader(http.StatusPaymentRequired)
+	}))
+}
+
+func TestRunDryRunReportsTheDecisionAndSignsNothing(t *testing.T) {
+	server := dryRunEndpoint(t, "1000000000000000") // 0.001 pieUSD
+	defer server.Close()
+
+	var out strings.Builder
+	wouldPay, err := runDryRun(http.DefaultClient, server.URL, "GET", nil, nil, -1, "1", &out)
+	if err != nil {
+		t.Fatalf("runDryRun: %v", err)
+	}
+	if !wouldPay {
+		t.Errorf("0.001 pieUSD is within the $1 cap; report:\n%s", out.String())
+	}
+	for _, want := range []string{
+		"nothing was signed or sent",
+		"pay would sign option 0",
+		"0.001 pieUSD  (1000000000000000 units)",
+		"chosen automatically",
+		"within cap",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("dry-run report missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestRunDryRunRefusesAboveTheCapWithoutAServerRoundTripForPayment(t *testing.T) {
+	server := dryRunEndpoint(t, "5000000000000000000") // 5 pieUSD
+	defer server.Close()
+
+	var out strings.Builder
+	wouldPay, err := runDryRun(http.DefaultClient, server.URL, "GET", nil, nil, -1, "1", &out)
+	if err != nil {
+		t.Fatalf("a refused payment is a finding, not an error: %v", err)
+	}
+	if wouldPay {
+		t.Errorf("5 pieUSD must not be reported as payable under a $1 cap")
+	}
+	if !strings.Contains(out.String(), "REFUSE") || !strings.Contains(out.String(), "per-payment cap") {
+		t.Errorf("report must state the refusal and the cap:\n%s", out.String())
+	}
+
+	// The same endpoint passes when the caller raises the cap.
+	out.Reset()
+	if wouldPay, _ = runDryRun(http.DefaultClient, server.URL, "GET", nil, nil, -1, "10", &out); !wouldPay {
+		t.Errorf("cap 10 must pass:\n%s", out.String())
+	}
+}

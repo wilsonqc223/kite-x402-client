@@ -43,12 +43,12 @@ type PayResult struct {
 	Amount string
 }
 
-// payConfig holds the tunables of Pay.
+// payConfig holds the tunables of Pay and Inspect.
 type payConfig struct {
 	maxAmountUSD string
 }
 
-// PayOption customises Pay.
+// PayOption customises Pay and Inspect.
 type PayOption func(*payConfig)
 
 // WithMaxAmountUSD caps the per-payment price, as a USD decimal string
@@ -56,6 +56,135 @@ type PayOption func(*payConfig)
 // anything is signed. "0" disables the cap.
 func WithMaxAmountUSD(usd string) PayOption {
 	return func(c *payConfig) { c.maxAmountUSD = usd }
+}
+
+// Inspection describes what Pay would do for an endpoint, without signing
+// or sending a payment. It is the read-only half of Pay: the same unpaid
+// request, the same option selection and the same price-cap check.
+type Inspection struct {
+	// PaidEndpoint is false when the endpoint answered without a 402
+	// challenge — there is nothing to pay.
+	PaidEndpoint bool
+	// Status is the HTTP status of the unpaid response.
+	Status int
+	// Body is the unpaid response body (only meaningful for a free endpoint).
+	Body []byte
+	// Challenge is the decoded 402 challenge; nil for a free endpoint.
+	Challenge *PaymentRequired
+	// OptionIndex is the index of the option Pay would sign, -1 for a free
+	// endpoint.
+	OptionIndex int
+	// Option is the advertised option Pay would sign.
+	Option PaymentRequirements
+	// CapUSD is the per-payment cap that was applied ("" when disabled).
+	CapUSD string
+	// WithinCap reports whether Option's price passes the cap. A violation is
+	// a finding, not an error: Pay would refuse before signing.
+	WithinCap bool
+	// Refusal explains why Pay would refuse (cap exceeded, or a malformed
+	// price); empty when WithinCap is true.
+	Refusal string
+}
+
+// Inspect reports what Pay would pay for rawURL. It sends exactly one
+// request, unpaid, and never signs anything, so it needs no wallet: use it
+// to audit an endpoint's price and options before spending.
+func Inspect(
+	httpClient *http.Client,
+	rawURL, method string,
+	body []byte,
+	headers [][2]string,
+	optionIndex int,
+	opts ...PayOption,
+) (Inspection, error) {
+	config := payConfig{maxAmountUSD: DefaultMaxPaymentUSD}
+	for _, opt := range opts {
+		opt(&config)
+	}
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	plan, passthrough, err := inspect(httpClient, method, rawURL, body, headers, optionIndex, config)
+	if err != nil {
+		return Inspection{}, err
+	}
+	if plan == nil {
+		result, err := readFinal(passthrough, PayResult{Option: -1})
+		if err != nil {
+			return Inspection{}, err
+		}
+		return Inspection{
+			PaidEndpoint: false,
+			Status:       result.Status,
+			Body:         result.Body,
+			OptionIndex:  -1,
+			WithinCap:    true,
+		}, nil
+	}
+	return Inspection{
+		PaidEndpoint: true,
+		Status:       http.StatusPaymentRequired,
+		Challenge:    plan.challenge,
+		OptionIndex:  plan.index,
+		Option:       plan.option,
+		CapUSD:       plan.config.maxAmountUSD,
+		WithinCap:    plan.capErr == nil,
+		Refusal:      errText(plan.capErr),
+	}, nil
+}
+
+// plan is the resolved first phase of Pay: the decoded challenge, the
+// option to sign and the verdict of the price cap.
+type plan struct {
+	challenge *PaymentRequired
+	option    PaymentRequirements
+	index     int
+	config    payConfig
+	capErr    error
+}
+
+// inspect issues the unpaid request and resolves the payment plan. Exactly
+// one of the returns is non-nil: the plan for a paid endpoint, or the open
+// response of a free one (which the caller must read or close).
+func inspect(
+	httpClient *http.Client,
+	method, rawURL string,
+	body []byte,
+	headers [][2]string,
+	optionIndex int,
+	config payConfig,
+) (*plan, *http.Response, error) {
+	req, err := newRequest(method, rawURL, body, headers)
+	if err != nil {
+		return nil, nil, err
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, nil, fmt.Errorf("requesting %s: %w", rawURL, err)
+	}
+	challenge, err := readChallenge(resp)
+	if err != nil {
+		resp.Body.Close()
+		return nil, nil, err
+	}
+	if challenge == nil {
+		return nil, resp, nil // the caller owns the response body now
+	}
+	// The challenge is fully decoded; the unpaid response body is no longer
+	// needed and must not linger on the connection pool.
+	resp.Body.Close()
+
+	option, index, err := selectOption(*challenge, optionIndex)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &plan{
+		challenge: challenge,
+		option:    option,
+		index:     index,
+		config:    config,
+		capErr:    checkPriceCap(option, config.maxAmountUSD),
+	}, nil, nil
 }
 
 // Pay performs the full x402 client flow against rawURL:
@@ -72,7 +201,8 @@ func WithMaxAmountUSD(usd string) PayOption {
 // pay on, falling back to accepts[0] when none match.
 //
 // A single payment never costs more than DefaultMaxPaymentUSD unless
-// WithMaxAmountUSD says otherwise.
+// WithMaxAmountUSD says otherwise. Inspect runs the first two steps without
+// a wallet when you want to see the decision before spending.
 func Pay(
 	httpClient *http.Client,
 	rawURL, method string,
@@ -82,69 +212,51 @@ func Pay(
 	optionIndex int,
 	opts ...PayOption,
 ) (PayResult, error) {
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
 	config := payConfig{maxAmountUSD: DefaultMaxPaymentUSD}
 	for _, opt := range opts {
 		opt(&config)
 	}
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
 
-	req, err := newRequest(method, rawURL, body, headers)
+	plan, passthrough, err := inspect(httpClient, method, rawURL, body, headers, optionIndex, config)
 	if err != nil {
 		return PayResult{Option: -1}, err
 	}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return PayResult{Option: -1}, fmt.Errorf("requesting %s: %w", rawURL, err)
+	if plan == nil {
+		return readFinal(passthrough, PayResult{Option: -1})
 	}
-	challenge, err := readChallenge(resp)
-	if err != nil {
-		resp.Body.Close()
-		return PayResult{Option: -1}, err
-	}
-	if challenge == nil {
-		// Not an x402 endpoint (or nothing to pay): pass through.
-		return readFinal(resp, PayResult{Option: -1})
-	}
-	// The challenge is fully decoded; the unpaid response body is no longer
-	// needed and must not linger on the connection pool.
-	resp.Body.Close()
-
-	option, index, err := selectOption(*challenge, optionIndex)
-	if err != nil {
-		return PayResult{Option: -1, Challenge: challenge}, err
-	}
-	if err := checkPriceCap(option, config.maxAmountUSD); err != nil {
-		return PayResult{Option: index, Challenge: challenge}, err
+	if plan.capErr != nil {
+		return PayResult{Option: plan.index, Challenge: plan.challenge}, plan.capErr
 	}
 
-	payload, err := signer.BuildAndSign(option, challenge.Resource, time.Now())
+	payload, err := signer.BuildAndSign(plan.option, plan.challenge.Resource, time.Now())
 	if err != nil {
-		return PayResult{Option: index, Challenge: challenge}, err
+		return PayResult{Option: plan.index, Challenge: plan.challenge}, err
 	}
 	encoded, err := EncodePayload(payload)
 	if err != nil {
-		return PayResult{Option: index, Challenge: challenge}, err
+		return PayResult{Option: plan.index, Challenge: plan.challenge}, err
 	}
 
 	paidHeaders := append(append([][2]string{}, headers...), [2]string{HeaderPaymentSignature, encoded})
-	req, err = newRequest(method, rawURL, body, paidHeaders)
+	req, err := newRequest(method, rawURL, body, paidHeaders)
 	if err != nil {
-		return PayResult{Option: index, Challenge: challenge}, err
+		return PayResult{Option: plan.index, Challenge: plan.challenge}, err
 	}
-	resp, err = httpClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
-		return PayResult{Option: index, Challenge: challenge}, fmt.Errorf("paying %s: %w", rawURL, err)
+		return PayResult{Option: plan.index, Challenge: plan.challenge}, fmt.Errorf("paying %s: %w", rawURL, err)
 	}
 	final, err := readChallenge(resp)
 	if err != nil {
 		resp.Body.Close()
-		return PayResult{Option: index, Challenge: challenge}, err
+		return PayResult{Option: plan.index, Challenge: plan.challenge}, err
 	}
 	result, err := readFinal(resp, PayResult{
-		Option: index,
-		Amount: option.Amount,
+		Option: plan.index,
+		Amount: plan.option.Amount,
 		Paid:   final == nil && resp.StatusCode < 400,
 	})
 	if err != nil {
@@ -205,6 +317,13 @@ func checkPriceCap(option PaymentRequirements, maxAmountUSD string) error {
 			option.Amount, option.Network, maxAmountUSD)
 	}
 	return nil
+}
+
+func errText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func newRequest(method, rawURL string, body []byte, headers [][2]string) (*http.Request, error) {

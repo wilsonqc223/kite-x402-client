@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -69,7 +70,8 @@ Environment:
 `)
 }
 
-// cmdPay performs the full x402 payment flow for one URL.
+// cmdPay performs the full x402 payment flow for one URL, or with
+// -dry-run only reports what it would pay.
 func cmdPay(args []string) error {
 	fs := flag.NewFlagSet("pay", flag.ExitOnError)
 	method := fs.String("X", "GET", "HTTP method")
@@ -85,6 +87,8 @@ func cmdPay(args []string) error {
 	proxy := fs.String("proxy", "", "egress proxy URL, e.g. socks5://127.0.0.1:10800")
 	maxUSD := fs.String("max-usd", cli.EnvOrDefault("KITE_MAX_PAYMENT_USD", x402.DefaultMaxPaymentUSD),
 		"refuse any single payment above this USD price; 0 disables the cap")
+	dryRun := fs.Bool("dry-run", false,
+		"report what would be paid — option, price, cap verdict — without signing or sending (no wallet needed); exit 3 if pay would refuse")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: kx402 pay [flags] <url>")
 		fs.PrintDefaults()
@@ -97,20 +101,33 @@ func cmdPay(args []string) error {
 		os.Exit(2)
 	}
 
+	body, err := readBody(*data)
+	if err != nil {
+		return err
+	}
+	httpClient, err := cli.HTTPClientFor(*proxy, 60*time.Second)
+	if err != nil {
+		return err
+	}
+
+	if *dryRun {
+		// No wallet is loaded on this path: nothing is signed, so the key
+		// is not needed (and a missing one must not block an audit).
+		wouldPay, err := runDryRun(httpClient, fs.Arg(0), *method, body, headers, *option, *maxUSD, os.Stdout)
+		if err != nil {
+			return err
+		}
+		if !wouldPay {
+			os.Exit(3)
+		}
+		return nil
+	}
+
 	key, err := cli.LoadKey(*keyFile)
 	if err != nil {
 		return err
 	}
 	signer, err := x402.NewSignerFromHex(key)
-	if err != nil {
-		return err
-	}
-	body, err := readBody(*data)
-	if err != nil {
-		return err
-	}
-
-	httpClient, err := cli.HTTPClientFor(*proxy, 60*time.Second)
 	if err != nil {
 		return err
 	}
@@ -145,6 +162,63 @@ func cmdPay(args []string) error {
 		os.Exit(2)
 	}
 	return nil
+}
+
+// runDryRun writes the payment decision for url to out and reports whether
+// `kx402 pay` would go ahead and sign. It sends one unpaid request and
+// never loads a key.
+func runDryRun(
+	httpClient *http.Client,
+	rawURL, method string,
+	body []byte,
+	headers [][2]string,
+	optionIndex int,
+	maxUSD string,
+	out io.Writer,
+) (bool, error) {
+	got, err := x402.Inspect(httpClient, rawURL, method, body, headers, optionIndex,
+		x402.WithMaxAmountUSD(maxUSD))
+	if err != nil {
+		return false, err
+	}
+	fmt.Fprintln(out, "dry run — nothing was signed or sent")
+	if !got.PaidEndpoint {
+		fmt.Fprintf(out, "%s answered %d without a 402 challenge — nothing to pay\n", rawURL, got.Status)
+		fmt.Fprintf(out, "%s\n", got.Body)
+		return true, nil
+	}
+
+	total := len(got.Challenge.Accepts)
+	chain, known := cli.ChainByNetwork(got.Option.Network)
+	fmt.Fprintf(out, "%s answered 402 with %d payment option(s); pay would sign option %d:\n",
+		rawURL, total, got.OptionIndex)
+	if optionIndex < 0 {
+		fmt.Fprintln(out, "  (chosen automatically: the first option on a Kite network)")
+	}
+	fmt.Fprintf(out, "  network:  %s\n", got.Option.Network)
+	fmt.Fprintf(out, "  price:    %s %s  (%s units)\n",
+		cli.FormatUnits(got.Option.Amount, chain, known), chain.AssetSymbol, got.Option.Amount)
+	fmt.Fprintf(out, "  asset:    %s\n", got.Option.Asset)
+	fmt.Fprintf(out, "  payTo:    %s\n", got.Option.PayTo)
+	fmt.Fprintf(out, "  validity: %ds\n", got.Option.MaxTimeoutSeconds)
+	if name, ok := got.Option.Extra["name"].(string); ok {
+		fmt.Fprintf(out, "  token:    %s\n", name)
+	}
+
+	switch {
+	case got.CapUSD == "0":
+		fmt.Fprintln(out, "price cap: disabled (-max-usd 0)")
+	case got.WithinCap:
+		fmt.Fprintf(out, "price cap: $%s — within cap\n", got.CapUSD)
+	default:
+		fmt.Fprintf(out, "price cap: $%s — pay would REFUSE: %s\n", got.CapUSD, got.Refusal)
+	}
+	if key := strings.TrimSpace(os.Getenv("KITE_PRIVATE_KEY")); key != "" {
+		if signer, err := x402.NewSignerFromHex(key); err == nil {
+			fmt.Fprintf(out, "wallet:    %s (KITE_PRIVATE_KEY; balance not checked)\n", signer.Address())
+		}
+	}
+	return got.WithinCap, nil
 }
 
 // headerList collects repeatable -H K:V flags.

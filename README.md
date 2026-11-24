@@ -75,6 +75,26 @@ settled: tx 0xabc... on eip155:2368 (0.001 pieUSD)
 {"data":"paid!"}
 ```
 
+**Look before you pay.** `kx402 pay -dry-run <url>` sends one unpaid
+request and reports exactly what `pay` would sign — which option, at what
+price, and whether it passes the cap — without loading a wallet or signing
+anything. It exits `3` when `pay` would refuse, so it doubles as a check in
+scripts and for agents deciding whether a price is acceptable:
+
+```bash
+$ kx402 pay -dry-run https://paid-api.example.com/v1/forecast
+dry run — nothing was signed or sent
+https://paid-api.example.com/v1/forecast answered 402 with 2 payment option(s); pay would sign option 0:
+  (chosen automatically: the first option on a Kite network)
+  network:  eip155:2368
+  price:    0.001 pieUSD  (1000000000000000 units)
+  asset:    0x38129cf4CE5E183eFF248F42A7D345Bb1B47621A
+  payTo:    0xC0FFEE…
+  validity: 60s
+  token:    pieUSD
+price cap: $1 — within cap
+```
+
 `probe`, `pay` and `balance` all take `-proxy URL` (e.g.
 `socks5://127.0.0.1:10800`) so the client works from networks where paid
 APIs are only reachable through an egress proxy.

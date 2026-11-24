@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/Chesten223/kite-x402-client/internal/kite"
@@ -364,5 +365,98 @@ func TestChallengeExtraMayCarryNonStringValues(t *testing.T) {
 	}
 	if chainID, ok := challenge.Accepts[0].Extra["chainId"].(float64); !ok || chainID != 2368 {
 		t.Errorf("numeric extra lost: %#v", challenge.Accepts[0].Extra)
+	}
+}
+
+// ---- Inspect: the read-only half of Pay ----
+
+func TestInspectSendsOneUnpaidRequestAndNeverSigns(t *testing.T) {
+	var unpaid, paid atomic.Int32
+	challenge := twoOptionChallenge()
+	raw, _ := json.Marshal(challenge)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(HeaderPaymentSignature) != "" {
+			paid.Add(1)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		unpaid.Add(1)
+		w.Header().Set(HeaderPaymentRequired, base64.StdEncoding.EncodeToString(raw))
+		w.WriteHeader(http.StatusPaymentRequired)
+	}))
+	defer server.Close()
+
+	got, err := Inspect(http.DefaultClient, server.URL, http.MethodGet, nil, nil, -1)
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	if !got.PaidEndpoint || got.Status != http.StatusPaymentRequired {
+		t.Errorf("inspection = paid endpoint %v status %d", got.PaidEndpoint, got.Status)
+	}
+	if got.OptionIndex != 0 || got.Option.Network != kite.Testnet.Network || got.Option.Amount != "1000000000000000" {
+		t.Errorf("would pay option %d: %+v", got.OptionIndex, got.Option)
+	}
+	if got.Challenge == nil || len(got.Challenge.Accepts) != 2 {
+		t.Errorf("challenge not reported: %+v", got.Challenge)
+	}
+	if !got.WithinCap || got.Refusal != "" || got.CapUSD != DefaultMaxPaymentUSD {
+		t.Errorf("cap verdict = within %v refusal %q cap %q", got.WithinCap, got.Refusal, got.CapUSD)
+	}
+	if unpaid.Load() != 1 || paid.Load() != 0 {
+		t.Errorf("sent %d unpaid and %d paid requests, want exactly 1 unpaid and 0 paid", unpaid.Load(), paid.Load())
+	}
+}
+
+func TestInspectReportsACapViolationAsAFindingNotAnError(t *testing.T) {
+	endpoint := &paidEndpoint{challenge: pricedChallenge(kite.Testnet.Network, "5000000000000000000")}
+	server := endpoint.start(t)
+
+	got, err := Inspect(http.DefaultClient, server.URL, http.MethodGet, nil, nil, -1)
+	if err != nil {
+		t.Fatalf("a cap violation is a finding, not an error: %v", err)
+	}
+	if got.WithinCap {
+		t.Error("5 pieUSD must be reported as above the default cap")
+	}
+	if !strings.Contains(got.Refusal, "per-payment cap") {
+		t.Errorf("refusal does not explain the cap: %q", got.Refusal)
+	}
+	if len(endpoint.accepted) != 0 {
+		t.Errorf("server received %d payments, want 0", len(endpoint.accepted))
+	}
+
+	// With the cap raised the same endpoint inspects as payable.
+	got, err = Inspect(http.DefaultClient, server.URL, http.MethodGet, nil, nil, -1, WithMaxAmountUSD("10"))
+	if err != nil || !got.WithinCap {
+		t.Errorf("cap 10: want within cap, got within=%v err=%v", got.WithinCap, err)
+	}
+}
+
+func TestInspectHonorsTheRequestedOption(t *testing.T) {
+	endpoint := &paidEndpoint{challenge: twoOptionChallenge()}
+	server := endpoint.start(t)
+
+	got, err := Inspect(http.DefaultClient, server.URL, http.MethodGet, nil, nil, 1)
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	if got.OptionIndex != 1 || got.Option.Network != kite.Mainnet.Network || got.Option.Amount != "50000" {
+		t.Errorf("option 1 = index %d %+v", got.OptionIndex, got.Option)
+	}
+}
+
+func TestInspectPassesAFreeEndpointThrough(t *testing.T) {
+	endpoint := &paidEndpoint{free: true}
+	server := endpoint.start(t)
+
+	got, err := Inspect(http.DefaultClient, server.URL, http.MethodGet, nil, nil, -1)
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	if got.PaidEndpoint || got.OptionIndex != -1 || got.Status != http.StatusOK {
+		t.Errorf("free endpoint = paid %v index %d status %d", got.PaidEndpoint, got.OptionIndex, got.Status)
+	}
+	if !strings.Contains(string(got.Body), "free content") {
+		t.Errorf("body = %s", got.Body)
 	}
 }

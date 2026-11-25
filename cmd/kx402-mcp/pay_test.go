@@ -212,6 +212,33 @@ func TestInspectReportsARefusalAsTheAnswerNotAnError(t *testing.T) {
 	}
 }
 
+func TestInspectSendsTheAgentToTheCapOnlyWhenThePriceIsAboveIt(t *testing.T) {
+	t.Setenv("KITE_PRIVATE_KEY", "")
+	server, accepted := paidMock(t, twoChainChallengeJSON("5000000000000000000"))
+
+	// A cap that is not a price is refused as well. Raising it is no fix, so
+	// the agent must not be told that the operator should.
+	t.Setenv("KITE_MAX_PAYMENT_USD", "not-a-price")
+	result := callInspect(t, server.URL+"/v1/x", 1)
+	if result.IsError {
+		t.Fatalf("an unusable cap is the answer, not a tool error: %+v", result)
+	}
+	if report := result.Content[0].Text; !strings.Contains(report, "kx402_pay would refuse this payment") ||
+		strings.Contains(report, "raise the cap") {
+		t.Errorf("an unusable cap must be reported without sending the agent to the cap:\n%s", report)
+	}
+
+	// A price above the cap is cured by raising it, and only then.
+	t.Setenv("KITE_MAX_PAYMENT_USD", "0.01")
+	result = callInspect(t, server.URL+"/v1/x", 1)
+	if report := result.Content[0].Text; !strings.Contains(report, "Only the operator can raise the cap") {
+		t.Errorf("a price above the cap must point at the operator's cap:\n%s", report)
+	}
+	if got := atomic.LoadInt32(accepted); got != 0 {
+		t.Errorf("server received %d signed payments, want 0", got)
+	}
+}
+
 func TestInspectSelectsTheSameOptionAsPay(t *testing.T) {
 	// Option 0 is a chain this toolkit cannot sign for. Inspecting it must
 	// name that option rather than quietly reporting the auto-selected one,

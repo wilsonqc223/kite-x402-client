@@ -13,6 +13,18 @@ adheres to [Semantic Versioning](https://semver.org/).
   a committed key is a committed key: every test wallet is now generated at
   runtime, and a scan for 64-hex-digit strings in the source finds none.
 
+### Fixed
+
+- **`kx402` buffered a whole response before printing any of it.** An endpoint
+  could exhaust the caller's memory by answering big, and `pay -dry-run`
+  printed a free endpoint's entire body. Responses are now cut off at 8 MiB
+  (`-max-body-bytes`, `x402.WithMaxBodyBytes`) and never passed off as whole:
+  `pay` says so on stderr, `kx402_pay` says so in its result, and a dry run
+  shows the first 2 KiB of a free body.
+- A dry run, and the MCP inspect tool, advised raising the price cap on every
+  refusal — including a cap that is not a price, which raising cannot cure.
+  The advice now appears only when the price is above the cap.
+
 ### Added
 
 - **`kx402_inspect` MCP tool**: the same report for agents — what

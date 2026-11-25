@@ -90,6 +90,8 @@ func cmdPay(args []string) error {
 		"refuse any single payment above this USD price; 0 disables the cap")
 	dryRun := fs.Bool("dry-run", false,
 		"report what would be paid — option, price, cap verdict — without signing or sending (no wallet needed); exit 3 if pay would refuse")
+	maxBody := fs.Int64("max-body-bytes", x402.DefaultMaxBodyBytes,
+		"read at most this many bytes of the response; a longer body is cut off and reported on stderr")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: kx402 pay [flags] <url>")
 		fs.PrintDefaults()
@@ -112,9 +114,9 @@ func cmdPay(args []string) error {
 	}
 
 	if *dryRun {
-		// No wallet is loaded on this path: nothing is signed, so the key
-		// is not needed (and a missing one must not block an audit).
-		wouldPay, err := runDryRun(httpClient, fs.Arg(0), *method, body, headers, *option, *maxUSD, os.Stdout)
+		// Nothing is signed on this path, so no key is required and a missing
+		// one must not block an audit.
+		wouldPay, err := runDryRun(httpClient, fs.Arg(0), *method, body, headers, *option, *maxUSD, *maxBody, os.Stdout)
 		if err != nil {
 			return err
 		}
@@ -133,7 +135,7 @@ func cmdPay(args []string) error {
 		return err
 	}
 	result, err := x402.Pay(httpClient, fs.Arg(0), *method, body, headers, signer, *option,
-		x402.WithMaxAmountUSD(*maxUSD))
+		x402.WithMaxAmountUSD(*maxUSD), x402.WithMaxBodyBytes(*maxBody))
 	if err != nil {
 		return withCapHint(err, " (raise it with -max-usd)")
 	}
@@ -159,6 +161,11 @@ func cmdPay(args []string) error {
 	}
 
 	fmt.Printf("%s\n", result.Body)
+	if result.BodyTruncated {
+		// On purpose not on stdout: what was printed is the beginning of the
+		// response, and a pipe should not take it for the whole thing.
+		fmt.Fprintf(os.Stderr, "kx402: response body cut off after %d bytes; pass -max-body-bytes to read more\n", *maxBody)
+	}
 	if result.Status >= 400 {
 		os.Exit(2)
 	}
@@ -167,8 +174,8 @@ func cmdPay(args []string) error {
 
 // runDryRun inspects url and writes what `kx402 pay` would do to out,
 // reporting whether it would go ahead and sign. It sends one unpaid request
-// and never signs, so it loads no key; the configured wallet's address is
-// shown when there is one.
+// and never signs, so no key is required; the address of the wallet in
+// KITE_PRIVATE_KEY is shown when it is set.
 func runDryRun(
 	httpClient *http.Client,
 	rawURL, method string,
@@ -176,15 +183,18 @@ func runDryRun(
 	headers [][2]string,
 	optionIndex int,
 	maxUSD string,
+	maxBodyBytes int64,
 	out io.Writer,
 ) (bool, error) {
 	got, err := x402.Inspect(httpClient, rawURL, method, body, headers, optionIndex,
-		x402.WithMaxAmountUSD(maxUSD))
+		x402.WithMaxAmountUSD(maxUSD), x402.WithMaxBodyBytes(maxBodyBytes))
 	if err != nil {
 		return false, err
 	}
 	wouldPay := cli.WriteInspection(out, rawURL, optionIndex, got, cli.WalletAddressFromEnv())
-	if !wouldPay && got.Refusal != "" {
+	// Raising the cap cures only a price above it. A malformed price or an
+	// unusable cap is reported above, and this advice would be wrong there.
+	if got.CapExceeded {
 		fmt.Fprintln(out, "to raise the cap, pass -max-usd (0 disables it)")
 	}
 	return wouldPay, nil

@@ -20,7 +20,7 @@ func WriteInspection(out io.Writer, rawURL string, requestedOption int, got x402
 	fmt.Fprintln(out, "dry run — nothing was signed or sent")
 	if !got.PaidEndpoint {
 		fmt.Fprintf(out, "%s answered %d without a 402 challenge — nothing to pay\n", rawURL, got.Status)
-		fmt.Fprintf(out, "%s\n", got.Body)
+		writeBodyPreview(out, got)
 		return true
 	}
 
@@ -52,6 +52,28 @@ func WriteInspection(out io.Writer, rawURL string, requestedOption int, got x402
 		fmt.Fprintf(out, "wallet:    %s (balance not checked)\n", walletAddress)
 	}
 	return got.WithinCap
+}
+
+// inspectPreviewBytes is how much of a free endpoint's body the report
+// shows. A dry run answers a question about the price; the body is context,
+// and it comes from an endpoint that has neither been paid for nor vetted.
+const inspectPreviewBytes = 2048
+
+// writeBodyPreview shows the beginning of the unpaid response body and says
+// how much of it is left out, so neither a terminal nor an agent's context
+// is flooded by an endpoint that answers big.
+func writeBodyPreview(out io.Writer, got x402.Inspection) {
+	body := got.Body
+	if len(body) <= inspectPreviewBytes {
+		fmt.Fprintf(out, "%s\n", body)
+		return
+	}
+	fmt.Fprintf(out, "%s\n(%d more bytes of the body not shown",
+		body[:inspectPreviewBytes], len(body)-inspectPreviewBytes)
+	if got.BodyTruncated {
+		fmt.Fprint(out, ", and the body itself was cut off at the reading limit")
+	}
+	fmt.Fprintln(out, ")")
 }
 
 // WalletAddressFromEnv returns the address of the wallet configured through

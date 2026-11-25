@@ -188,7 +188,7 @@ func TestRunDryRunReportsTheDecisionAndSignsNothing(t *testing.T) {
 	defer server.Close()
 
 	var out strings.Builder
-	wouldPay, err := runDryRun(http.DefaultClient, server.URL, "GET", nil, nil, -1, "1", &out)
+	wouldPay, err := runDryRun(http.DefaultClient, server.URL, "GET", nil, nil, -1, "1", x402.DefaultMaxBodyBytes, &out)
 	if err != nil {
 		t.Fatalf("runDryRun: %v", err)
 	}
@@ -213,7 +213,7 @@ func TestRunDryRunRefusesAboveTheCapWithoutAServerRoundTripForPayment(t *testing
 	defer server.Close()
 
 	var out strings.Builder
-	wouldPay, err := runDryRun(http.DefaultClient, server.URL, "GET", nil, nil, -1, "1", &out)
+	wouldPay, err := runDryRun(http.DefaultClient, server.URL, "GET", nil, nil, -1, "1", x402.DefaultMaxBodyBytes, &out)
 	if err != nil {
 		t.Fatalf("a refused payment is a finding, not an error: %v", err)
 	}
@@ -226,8 +226,34 @@ func TestRunDryRunRefusesAboveTheCapWithoutAServerRoundTripForPayment(t *testing
 
 	// The same endpoint passes when the caller raises the cap.
 	out.Reset()
-	if wouldPay, _ = runDryRun(http.DefaultClient, server.URL, "GET", nil, nil, -1, "10", &out); !wouldPay {
+	if wouldPay, _ = runDryRun(http.DefaultClient, server.URL, "GET", nil, nil, -1, "10", x402.DefaultMaxBodyBytes, &out); !wouldPay {
 		t.Errorf("cap 10 must pass:\n%s", out.String())
+	}
+}
+
+func TestRunDryRunAdvisesRaisingTheCapOnlyWhenThePriceIsAboveIt(t *testing.T) {
+	server := dryRunEndpoint(t, "5000000000000000000") // 5 pieUSD
+	defer server.Close()
+
+	var out strings.Builder
+	if _, err := runDryRun(http.DefaultClient, server.URL, "GET", nil, nil, -1, "1", x402.DefaultMaxBodyBytes, &out); err != nil {
+		t.Fatalf("runDryRun: %v", err)
+	}
+	if !strings.Contains(out.String(), "to raise the cap, pass -max-usd") {
+		t.Errorf("a price above the cap is cured by raising it; report:\n%s", out.String())
+	}
+
+	// A cap that is not a price is refused too. Raising it is no fix, so the
+	// report must not send the user to -max-usd.
+	out.Reset()
+	if _, err := runDryRun(http.DefaultClient, server.URL, "GET", nil, nil, -1, "not-a-price", x402.DefaultMaxBodyBytes, &out); err != nil {
+		t.Fatalf("an unusable cap is a finding, not an error: %v", err)
+	}
+	if !strings.Contains(out.String(), "REFUSE") {
+		t.Errorf("the refusal itself must be reported:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "raise the cap") {
+		t.Errorf("an unusable cap is not fixed by raising it; report:\n%s", out.String())
 	}
 }
 
@@ -248,7 +274,7 @@ func TestDryRunRefusalNamesTheFlagExactlyOnce(t *testing.T) {
 	defer server.Close()
 
 	var out strings.Builder
-	wouldPay, err := runDryRun(http.DefaultClient, server.URL, "GET", nil, nil, -1, "1", &out)
+	wouldPay, err := runDryRun(http.DefaultClient, server.URL, "GET", nil, nil, -1, "1", x402.DefaultMaxBodyBytes, &out)
 	if err != nil || wouldPay {
 		t.Fatalf("want a refusal, got wouldPay=%v err=%v", wouldPay, err)
 	}

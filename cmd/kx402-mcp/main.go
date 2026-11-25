@@ -297,8 +297,14 @@ func toolInspect(args json.RawMessage, proxy string) (toolCallResult, error) {
 	if !wouldPay {
 		// The refusal is the answer to the question that was asked, so it is
 		// returned as a normal result rather than as a tool error.
-		report.WriteString("kx402_pay would refuse this payment; nothing was signed. " +
-			"Only the operator can raise the cap (KITE_MAX_PAYMENT_USD); it cannot be changed from a tool call.\n")
+		report.WriteString("kx402_pay would refuse this payment; nothing was signed.")
+		if got.CapExceeded {
+			// Raising the cap cures only a price above it. For a malformed
+			// price that advice would send the agent to the wrong fix.
+			report.WriteString(" Only the operator can raise the cap (KITE_MAX_PAYMENT_USD); " +
+				"it cannot be changed from a tool call.")
+		}
+		report.WriteString("\n")
 	} else {
 		report.WriteString("call kx402_pay with the same url to proceed.\n")
 	}
@@ -368,6 +374,9 @@ func toolPay(args json.RawMessage, proxy string) (toolCallResult, error) {
 		fmt.Fprintf(&buf, "server said: %s\n", *result.Challenge.Error)
 	}
 	fmt.Fprintf(&buf, "body: %s\n", result.Body)
+	if result.BodyTruncated {
+		fmt.Fprintf(&buf, "[body cut off after %d bytes, the limit this server reads]\n", x402.DefaultMaxBodyBytes)
+	}
 	return text(buf.String()), nil
 }
 

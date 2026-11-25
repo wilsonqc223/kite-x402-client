@@ -2,6 +2,7 @@ package x402
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -18,12 +19,23 @@ import (
 // driving the MCP server — cannot drain a wallet in one request.
 const DefaultMaxPaymentUSD = "1"
 
+// DefaultMaxBodyBytes bounds how much of a response Pay and Inspect read into
+// memory. A larger response is cut off and reported as truncated
+// (PayResult.BodyTruncated) instead of being buffered whole: an endpoint
+// must not be able to exhaust the caller's memory by answering big, and a
+// body that was cut is never passed off as complete.
+const DefaultMaxBodyBytes int64 = 8 << 20
+
 // PayResult is the outcome of one x402-paid request.
 type PayResult struct {
 	// HTTP status of the final response.
 	Status int
 	// Body of the final response.
 	Body []byte
+	// BodyTruncated reports that Body was cut off at the body limit
+	// (DefaultMaxBodyBytes unless WithMaxBodyBytes says otherwise), so it is
+	// only the beginning of the response.
+	BodyTruncated bool
 	// Receipt is the decoded PAYMENT-RESPONSE header of a settled payment,
 	// or nil when the response carried none.
 	Receipt *SettleResponse
@@ -46,6 +58,7 @@ type PayResult struct {
 // payConfig holds the tunables of Pay and Inspect.
 type payConfig struct {
 	maxAmountUSD string
+	maxBodyBytes int64
 }
 
 // PayOption customises Pay and Inspect.
@@ -56,6 +69,17 @@ type PayOption func(*payConfig)
 // anything is signed. "0" disables the cap.
 func WithMaxAmountUSD(usd string) PayOption {
 	return func(c *payConfig) { c.maxAmountUSD = usd }
+}
+
+// WithMaxBodyBytes bounds how many bytes of the response are read; the rest
+// is cut off and reported through PayResult.BodyTruncated. n must be
+// positive; the default is DefaultMaxBodyBytes.
+func WithMaxBodyBytes(n int64) PayOption {
+	return func(c *payConfig) {
+		if n > 0 {
+			c.maxBodyBytes = n
+		}
+	}
 }
 
 // Inspection describes what Pay would do for an endpoint, without signing
@@ -84,6 +108,12 @@ type Inspection struct {
 	// Refusal explains why Pay would refuse (cap exceeded, or a malformed
 	// price); empty when WithinCap is true.
 	Refusal string
+	// CapExceeded reports that Option's price is above CapUSD — the one
+	// refusal that raising the cap would cure. It is false for every other
+	// reason Pay would refuse, such as a malformed price.
+	CapExceeded bool
+	// BodyTruncated reports that Body was cut off at the body limit.
+	BodyTruncated bool
 }
 
 // Inspect reports what Pay would pay for rawURL. It sends exactly one
@@ -97,7 +127,7 @@ func Inspect(
 	optionIndex int,
 	opts ...PayOption,
 ) (Inspection, error) {
-	config := payConfig{maxAmountUSD: DefaultMaxPaymentUSD}
+	config := payConfig{maxAmountUSD: DefaultMaxPaymentUSD, maxBodyBytes: DefaultMaxBodyBytes}
 	for _, opt := range opts {
 		opt(&config)
 	}
@@ -109,16 +139,17 @@ func Inspect(
 		return Inspection{}, err
 	}
 	if plan == nil {
-		result, err := readFinal(passthrough, PayResult{Option: -1})
+		result, err := readFinal(passthrough, PayResult{Option: -1}, config.maxBodyBytes)
 		if err != nil {
 			return Inspection{}, err
 		}
 		return Inspection{
-			PaidEndpoint: false,
-			Status:       result.Status,
-			Body:         result.Body,
-			OptionIndex:  -1,
-			WithinCap:    true,
+			PaidEndpoint:  false,
+			Status:        result.Status,
+			Body:          result.Body,
+			BodyTruncated: result.BodyTruncated,
+			OptionIndex:   -1,
+			WithinCap:     true,
 		}, nil
 	}
 	return Inspection{
@@ -130,6 +161,7 @@ func Inspect(
 		CapUSD:       plan.config.maxAmountUSD,
 		WithinCap:    plan.capErr == nil,
 		Refusal:      errText(plan.capErr),
+		CapExceeded:  capExceeded(plan.capErr),
 	}, nil
 }
 
@@ -212,7 +244,7 @@ func Pay(
 	optionIndex int,
 	opts ...PayOption,
 ) (PayResult, error) {
-	config := payConfig{maxAmountUSD: DefaultMaxPaymentUSD}
+	config := payConfig{maxAmountUSD: DefaultMaxPaymentUSD, maxBodyBytes: DefaultMaxBodyBytes}
 	for _, opt := range opts {
 		opt(&config)
 	}
@@ -225,7 +257,7 @@ func Pay(
 		return PayResult{Option: -1}, err
 	}
 	if plan == nil {
-		return readFinal(passthrough, PayResult{Option: -1})
+		return readFinal(passthrough, PayResult{Option: -1}, config.maxBodyBytes)
 	}
 	if plan.capErr != nil {
 		return PayResult{Option: plan.index, Challenge: plan.challenge}, plan.capErr
@@ -258,7 +290,7 @@ func Pay(
 		Option: plan.index,
 		Amount: plan.option.Amount,
 		Paid:   final == nil && resp.StatusCode < 400,
-	})
+	}, config.maxBodyBytes)
 	if err != nil {
 		return result, err
 	}
@@ -335,6 +367,13 @@ func checkPriceCap(option PaymentRequirements, maxAmountUSD string) error {
 	return nil
 }
 
+// capExceeded reports whether err is the price exceeding the cap, as opposed
+// to any other reason the cap check refused.
+func capExceeded(err error) bool {
+	var capErr *PriceCapError
+	return errors.As(err, &capErr)
+}
+
 func errText(err error) string {
 	if err == nil {
 		return ""
@@ -375,13 +414,17 @@ func readChallenge(resp *http.Response) (*PaymentRequired, error) {
 	return &challenge, nil
 }
 
-// readFinal drains resp into the result, attaching the settlement receipt
-// when present. It leaves resp's body consumed and closed.
-func readFinal(resp *http.Response, result PayResult) (PayResult, error) {
+// readFinal reads up to limit bytes of resp into the result, attaching the
+// settlement receipt when present. A longer body is cut off at the limit and
+// flagged BodyTruncated. It leaves resp's body consumed and closed.
+func readFinal(resp *http.Response, result PayResult, limit int64) (PayResult, error) {
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return result, fmt.Errorf("reading response body: %w", err)
+	}
+	if int64(len(body)) > limit {
+		body, result.BodyTruncated = body[:limit], true
 	}
 	result.Status = resp.StatusCode
 	result.Body = body

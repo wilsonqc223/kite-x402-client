@@ -121,6 +121,13 @@ hostile endpoint, or a prompt-injected agent, from draining a wallet in one
 request. The challenge's `payTo` and `asset` must be well-formed 20-byte
 addresses; anything else is refused rather than normalized.
 
+**Response size.** `kx402` reads at most **8 MiB** of a response into memory,
+so an endpoint cannot exhaust the caller's memory by answering big. A longer
+body is cut off at that point and never passed off as whole: `pay` prints the
+beginning on stdout and says so on stderr, the MCP server's `kx402_pay` says
+so in its result, and a dry run shows only the first 2 KiB of a free
+endpoint's body. Raise it per call with `-max-body-bytes N`.
+
 `pay` fetches the challenge, signs an EIP-3009 `transferWithAuthorization`
 for the option you pick (`-o N`, default: the first option on a known Kite
 network), retries the request with the `PAYMENT-SIGNATURE` header, and

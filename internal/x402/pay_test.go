@@ -22,9 +22,10 @@ type paidEndpoint struct {
 	mu        sync.Mutex
 	challenge PaymentRequired
 	accepted  []PaymentPayload
-	free      bool // answer 200 without a challenge
-	reject    bool // keep answering 402 even when paid
-	failAfter int  // non-zero: answer with this status once a valid payment arrives
+	free      bool   // answer 200 without a challenge
+	reject    bool   // keep answering 402 even when paid
+	failAfter int    // non-zero: answer with this status once a valid payment arrives
+	freeBody  []byte // body of a free answer; nil means a short JSON document
 }
 
 func (e *paidEndpoint) handler(w http.ResponseWriter, r *http.Request) {
@@ -69,7 +70,11 @@ func (e *paidEndpoint) handler(w http.ResponseWriter, r *http.Request) {
 
 	if e.free {
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"data":"free content"}`))
+		body := e.freeBody
+		if body == nil {
+			body = []byte(`{"data":"free content"}`)
+		}
+		_, _ = w.Write(body)
 		return
 	}
 
@@ -459,6 +464,60 @@ func TestInspectPassesAFreeEndpointThrough(t *testing.T) {
 	}
 	if !strings.Contains(string(got.Body), "free content") {
 		t.Errorf("body = %s", got.Body)
+	}
+}
+
+func TestInspectCutsAnOversizedBodyOffAtTheLimitAndSaysSo(t *testing.T) {
+	endpoint := &paidEndpoint{free: true, freeBody: []byte(strings.Repeat("b", 5000))}
+	server := endpoint.start(t)
+
+	got, err := Inspect(http.DefaultClient, server.URL, http.MethodGet, nil, nil, -1, WithMaxBodyBytes(1000))
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	if len(got.Body) != 1000 || !got.BodyTruncated {
+		t.Errorf("got %d bytes truncated=%v, want 1000 bytes flagged truncated", len(got.Body), got.BodyTruncated)
+	}
+
+	// A body that fits is whole — exactly at the limit included — and is not
+	// reported as cut off.
+	for _, limit := range []int64{5000, 6000} {
+		got, err = Inspect(http.DefaultClient, server.URL, http.MethodGet, nil, nil, -1, WithMaxBodyBytes(limit))
+		if err != nil || len(got.Body) != 5000 || got.BodyTruncated {
+			t.Errorf("limit %d: got %d bytes truncated=%v err=%v, want the whole 5000 bytes",
+				limit, len(got.Body), got.BodyTruncated, err)
+		}
+	}
+
+	// A limit that is not positive leaves the default in place.
+	got, err = Inspect(http.DefaultClient, server.URL, http.MethodGet, nil, nil, -1, WithMaxBodyBytes(0))
+	if err != nil || len(got.Body) != 5000 || got.BodyTruncated {
+		t.Errorf("WithMaxBodyBytes(0): got %d bytes truncated=%v err=%v, want the default limit",
+			len(got.Body), got.BodyTruncated, err)
+	}
+}
+
+func TestInspectTellsAPriceAboveTheCapFromAnyOtherRefusal(t *testing.T) {
+	endpoint := &paidEndpoint{challenge: pricedChallenge(kite.Testnet.Network, "5000000000000000000")} // 5 pieUSD
+	server := endpoint.start(t)
+
+	got, err := Inspect(http.DefaultClient, server.URL, http.MethodGet, nil, nil, -1, WithMaxAmountUSD("1"))
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	if got.WithinCap || !got.CapExceeded {
+		t.Errorf("5 pieUSD under a $1 cap: within=%v capExceeded=%v, want a refusal that raising the cap cures",
+			got.WithinCap, got.CapExceeded)
+	}
+
+	// A cap that is not a price is refused as well, but raising it is no fix.
+	got, err = Inspect(http.DefaultClient, server.URL, http.MethodGet, nil, nil, -1, WithMaxAmountUSD("not-a-price"))
+	if err != nil {
+		t.Fatalf("an unusable cap is a finding, not an error: %v", err)
+	}
+	if got.WithinCap || got.CapExceeded {
+		t.Errorf("unusable cap: within=%v capExceeded=%v, want a refusal that has nothing to do with the price",
+			got.WithinCap, got.CapExceeded)
 	}
 }
 

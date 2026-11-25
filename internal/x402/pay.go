@@ -288,6 +288,24 @@ func selectOption(challenge PaymentRequired, index int) (PaymentRequirements, in
 	return challenge.Accepts[index], index, nil
 }
 
+// PriceCapError reports an option priced above the configured cap. It is a
+// distinct type so each surface (CLI, MCP server) can add its own hint for
+// raising the cap instead of parsing the message.
+type PriceCapError struct {
+	// Amount is the option's price in atomic units.
+	Amount string
+	// Network is the CAIP-2 network the option settles on.
+	Network string
+	// CapUSD is the cap that was applied.
+	CapUSD string
+}
+
+func (e *PriceCapError) Error() string {
+	return fmt.Sprintf(
+		"refusing to pay %s atomic units on %s: it exceeds the per-payment cap of $%s USD",
+		e.Amount, e.Network, e.CapUSD)
+}
+
 // checkPriceCap refuses an option priced above the configured USD cap. The
 // comparison is done in atomic units with the chain's own integer price
 // parser, so there is no float rounding at the boundary.
@@ -312,9 +330,7 @@ func checkPriceCap(option PaymentRequirements, maxAmountUSD string) error {
 		return fmt.Errorf("invalid payment cap %q", maxAmountUSD)
 	}
 	if price.Cmp(capUnits) > 0 {
-		return fmt.Errorf(
-			"refusing to pay %s atomic units on %s: it exceeds the per-payment cap of $%s USD (raise it with -max-usd)",
-			option.Amount, option.Network, maxAmountUSD)
+		return &PriceCapError{Amount: option.Amount, Network: option.Network, CapUSD: maxAmountUSD}
 	}
 	return nil
 }

@@ -6,7 +6,29 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed — security
+
+- **No private-key material in the repository.** The tests and the e2e
+  example used to carry a hardcoded throwaway key. It was never funded, but
+  a committed key is a committed key: every test wallet is now generated at
+  runtime, and a scan for 64-hex-digit strings in the source finds none.
+
+### Added
+
+- **`kx402_inspect` MCP tool**: the same report for agents — what
+  `kx402_pay` would sign and whether it passes the operator's cap — with no
+  wallet and nothing signed. An unaffordable price is returned as a normal
+  answer, not a tool error. `kx402_pay`'s description now points at it.
+  The CLI's `-dry-run` and the MCP tool render through one function, so
+  both say the same thing about the same endpoint.
+
+### Changed
+
+- Release binaries now report their version with the leading `v` — `v0.4.0`
+  — the same string `go install` and a build from a checkout report.
+  Archives published up to v0.3.1 printed `0.3.1`. The release workflow now
+  runs the binaries from the archive and compares them with the installed
+  ones, so the two cannot report different versions again.
 
 ## [v0.3.1] - 2026-11-24
 
@@ -53,6 +75,12 @@ Nothing yet.
 - `x402.Inspect`: the read-only half of `x402.Pay` for library users; `Pay`
   and `Inspect` now share one implementation of the request, option
   selection and cap check, so a dry run cannot disagree with a real one.
+- **`kx402_inspect` MCP tool**: the same report for agents — what
+  `kx402_pay` would sign and whether it passes the operator's cap — with no
+  wallet and nothing signed. An unaffordable price is returned as a normal
+  answer, not a tool error. `kx402_pay`'s description now points at it.
+  The CLI's `-dry-run` and the MCP tool render through one function, so
+  both say the same thing about the same endpoint.
 
 ## [v0.2.0] - 2026-11-23
 

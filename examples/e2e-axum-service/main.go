@@ -17,6 +17,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -29,14 +30,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/wilsonqc223/kite-x402-client/internal/kite"
 	"github.com/wilsonqc223/kite-x402-client/internal/x402"
 )
 
-const (
-	payTo   = "0x00000000000000000000000000000000000000ff"
-	testKey = "0x8f2a1c4b0e5d3a7c6b9e2d4f1a8c7b5e3d6f9a2c5b8e1d4f7a2c5b8e3d6f9a1c"
-)
+const payTo = "0x00000000000000000000000000000000000000ff"
 
 func main() {
 	bin := flag.String("bin", os.Getenv("KITE_X402_AXUM_BIN"), "path to the kite-x402-service binary")
@@ -71,8 +70,12 @@ func main() {
 	fmt.Printf("challenge: %d option(s), first %s units of %s on %s\n",
 		len(challenge.Accepts), challenge.Accepts[0].Amount, challenge.Accepts[0].Asset, challenge.Accepts[0].Network)
 
-	// 2. Pay it with a real EIP-3009 signature.
-	signer, err := x402.NewSignerFromHex(testKey)
+	// 2. Pay it with a real EIP-3009 signature. The run needs a signer,
+	// never a funded account, so it uses a fresh wallet: no key material is
+	// kept in the repository.
+	wallet, err := crypto.GenerateKey()
+	fatalIf(err)
+	signer, err := x402.NewSignerFromHex("0x" + hex.EncodeToString(crypto.FromECDSA(wallet)))
 	fatalIf(err)
 	result, err := x402.Pay(http.DefaultClient, base+"/v1/forecast", http.MethodGet, nil, nil, signer, 0)
 	fatalIf(err)

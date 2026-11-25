@@ -14,11 +14,21 @@ import (
 
 // A fixed throwaway key (never fund this address) so digest tests are
 // deterministic. Generated with crypto.GenerateKey for this test suite.
-const testPrivateKey = "0x8f2a1c4b0e5d3a7c6b9e2d4f1a8c7b5e3d6f9a2c5b8e1d4f7a2c5b8e3d6f9a1c"
+// newTestKeyHex returns a fresh, never-funded private key. Keys are made
+// at runtime rather than committed: no private-key material belongs in the
+// repository, not even as a test fixture.
+func newTestKeyHex(t *testing.T) string {
+	t.Helper()
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generating a test key: %v", err)
+	}
+	return "0x" + hex.EncodeToString(crypto.FromECDSA(key))
+}
 
 func mustSigner(t *testing.T) *Signer {
 	t.Helper()
-	signer, err := NewSignerFromHex(testPrivateKey)
+	signer, err := NewSignerFromHex(newTestKeyHex(t))
 	if err != nil {
 		t.Fatalf("NewSignerFromHex: %v", err)
 	}
@@ -196,10 +206,14 @@ func TestNewSignerFromHexValidation(t *testing.T) {
 		}
 	}
 
-	signer := mustSigner(t)
-	key, err := crypto.HexToECDSA(strings.TrimPrefix(testPrivateKey, "0x"))
+	keyHex := newTestKeyHex(t)
+	signer, err := NewSignerFromHex(keyHex)
 	if err != nil {
-		t.Fatalf("re-reading test key: %v", err)
+		t.Fatalf("NewSignerFromHex(%d chars): %v", len(keyHex), err)
+	}
+	key, err := crypto.HexToECDSA(strings.TrimPrefix(keyHex, "0x"))
+	if err != nil {
+		t.Fatalf("re-reading the generated test key: %v", err)
 	}
 	want := crypto.PubkeyToAddress(key.PublicKey).Hex()
 	if signer.Address() != want {

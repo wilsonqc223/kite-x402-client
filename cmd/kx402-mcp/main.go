@@ -22,6 +22,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -92,12 +93,24 @@ var tools = []toolDef{
 		}, nil),
 	},
 	{
+		Name: "kx402_inspect",
+		Description: "See what kx402_pay would pay for an x402-paid endpoint without spending " +
+			"anything: sends one unpaid request and reports the option that would be signed, its " +
+			"price in tokens and atomic units, the payee, and whether it passes the operator's " +
+			"price cap. Needs no wallet. Call this before kx402_pay when the price matters.",
+		InputSchema: objectSchema(map[string]any{
+			"url":    map[string]any{"type": "string", "description": "The endpoint URL to inspect."},
+			"option": map[string]any{"type": "integer", "description": "Index of the payment option kx402_pay would use; default auto-selects."},
+		}, []string{"url"}),
+	},
+	{
 		Name: "kx402_pay",
 		Description: "Pay an x402-paid endpoint's 402 challenge with an EIP-3009 signature and return " +
 			"the paid body plus the on-chain settlement receipt. Requires KITE_PRIVATE_KEY in the " +
 			"server's environment; the key is never logged or returned. Each payment is capped at " +
 			"KITE_MAX_PAYMENT_USD (default $1) by the operator; a pricier challenge is refused " +
-			"before anything is signed, and the cap cannot be changed from a tool call.",
+			"before anything is signed, and the cap cannot be changed from a tool call. " +
+			"Use kx402_inspect first to see the price without spending.",
 		InputSchema: objectSchema(map[string]any{
 			"url":    map[string]any{"type": "string", "description": "The endpoint URL to pay."},
 			"option": map[string]any{"type": "integer", "description": "Index of the challenge option to pay; default auto-selects."},
@@ -188,6 +201,8 @@ func callTool(params json.RawMessage, proxy string) (json.RawMessage, *rpcError)
 		out, err = toolProbe(call.Arguments, proxy)
 	case "kx402_balance":
 		out, err = toolBalance(call.Arguments, proxy)
+	case "kx402_inspect":
+		out, err = toolInspect(call.Arguments, proxy)
 	case "kx402_pay":
 		out, err = toolPay(call.Arguments, proxy)
 	default:
@@ -254,6 +269,52 @@ func toolBalance(args json.RawMessage, proxy string) (toolCallResult, error) {
 	return text(buf.String()), nil
 }
 
+// toolInspect reports what kx402_pay would do for an endpoint without
+// signing anything, so an agent can check a price before committing to it.
+func toolInspect(args json.RawMessage, proxy string) (toolCallResult, error) {
+	var in struct {
+		URL    string `json:"url"`
+		Option *int   `json:"option"` // absent means auto-select, like kx402_pay
+	}
+	if err := json.Unmarshal(args, &in); err != nil || in.URL == "" {
+		return toolCallResult{}, fmt.Errorf("url is required")
+	}
+	client, err := httpClient(proxy, 60*time.Second)
+	if err != nil {
+		return toolCallResult{}, err
+	}
+	option := -1
+	if in.Option != nil {
+		option = *in.Option
+	}
+	got, err := x402.Inspect(client, in.URL, "GET", nil, nil, option,
+		x402.WithMaxAmountUSD(payCapUSD()))
+	if err != nil {
+		return toolCallResult{}, err
+	}
+	var report strings.Builder
+	wouldPay := cli.WriteInspection(&report, in.URL, option, got, cli.WalletAddressFromEnv())
+	if !wouldPay {
+		// The refusal is the answer to the question that was asked, so it is
+		// returned as a normal result rather than as a tool error.
+		report.WriteString("kx402_pay would refuse this payment; nothing was signed. " +
+			"Only the operator can raise the cap (KITE_MAX_PAYMENT_USD); it cannot be changed from a tool call.\n")
+	} else {
+		report.WriteString("call kx402_pay with the same url to proceed.\n")
+	}
+	return text(report.String()), nil
+}
+
+// withOperatorCapHint tells an agent refused by the price cap that only
+// the operator can raise it; other errors pass through unchanged.
+func withOperatorCapHint(err error) error {
+	var capErr *x402.PriceCapError
+	if errors.As(err, &capErr) {
+		return fmt.Errorf("%w. The cap is set by the operator through KITE_MAX_PAYMENT_USD and cannot be raised from a tool call", err)
+	}
+	return err
+}
+
 // payCapUSD is the per-payment price cap for the agent. It comes from the
 // operator's environment (KITE_MAX_PAYMENT_USD) and is never readable or
 // changeable through a tool call: an agent that is talked into visiting a
@@ -295,7 +356,7 @@ func toolPay(args json.RawMessage, proxy string) (toolCallResult, error) {
 	result, err := x402.Pay(client, in.URL, "GET", nil, nil, signer, option,
 		x402.WithMaxAmountUSD(cap))
 	if err != nil {
-		return toolCallResult{}, err
+		return toolCallResult{}, withOperatorCapHint(err)
 	}
 	var buf strings.Builder
 	fmt.Fprintf(&buf, "status: %d paid: %v option: %d\n", result.Status, result.Paid, result.Option)

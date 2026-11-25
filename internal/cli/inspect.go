@@ -1,0 +1,70 @@
+package cli
+
+import (
+	"fmt"
+	"io"
+	"strings"
+
+	"github.com/wilsonqc223/kite-x402-client/internal/x402"
+)
+
+// WriteInspection renders an x402.Inspect result — what Pay would do for an
+// endpoint — and reports whether Pay would go ahead and sign. It is the one
+// rendering shared by `kx402 pay -dry-run` and the MCP server's inspect
+// tool, so a CLI user and an agent are told exactly the same thing.
+//
+// requestedOption is the option index the caller asked for (-1 for
+// auto-select) and walletAddress, when non-empty, the payer that would be
+// charged.
+func WriteInspection(out io.Writer, rawURL string, requestedOption int, got x402.Inspection, walletAddress string) bool {
+	fmt.Fprintln(out, "dry run — nothing was signed or sent")
+	if !got.PaidEndpoint {
+		fmt.Fprintf(out, "%s answered %d without a 402 challenge — nothing to pay\n", rawURL, got.Status)
+		fmt.Fprintf(out, "%s\n", got.Body)
+		return true
+	}
+
+	chain, known := ChainByNetwork(got.Option.Network)
+	fmt.Fprintf(out, "%s answered 402 with %d payment option(s); pay would sign option %d:\n",
+		rawURL, len(got.Challenge.Accepts), got.OptionIndex)
+	if requestedOption < 0 {
+		fmt.Fprintln(out, "  (chosen automatically: the first option on a Kite network)")
+	}
+	fmt.Fprintf(out, "  network:  %s\n", got.Option.Network)
+	fmt.Fprintf(out, "  price:    %s %s  (%s units)\n",
+		FormatUnits(got.Option.Amount, chain, known), chain.AssetSymbol, got.Option.Amount)
+	fmt.Fprintf(out, "  asset:    %s\n", got.Option.Asset)
+	fmt.Fprintf(out, "  payTo:    %s\n", got.Option.PayTo)
+	fmt.Fprintf(out, "  validity: %ds\n", got.Option.MaxTimeoutSeconds)
+	if name, ok := got.Option.Extra["name"].(string); ok {
+		fmt.Fprintf(out, "  token:    %s\n", name)
+	}
+
+	switch {
+	case got.CapUSD == "0":
+		fmt.Fprintln(out, "price cap: disabled")
+	case got.WithinCap:
+		fmt.Fprintf(out, "price cap: $%s — within cap\n", got.CapUSD)
+	default:
+		fmt.Fprintf(out, "price cap: $%s — pay would REFUSE: %s\n", got.CapUSD, got.Refusal)
+	}
+	if walletAddress != "" {
+		fmt.Fprintf(out, "wallet:    %s (balance not checked)\n", walletAddress)
+	}
+	return got.WithinCap
+}
+
+// WalletAddressFromEnv returns the address of the wallet configured through
+// KITE_PRIVATE_KEY, or "" when no usable key is set. It derives the address
+// locally and never prints or returns the key itself.
+func WalletAddressFromEnv() string {
+	key, err := LoadKey("")
+	if err != nil {
+		return ""
+	}
+	signer, err := x402.NewSignerFromHex(key)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(signer.Address())
+}

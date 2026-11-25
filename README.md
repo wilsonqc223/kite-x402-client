@@ -146,19 +146,38 @@ every push.
 ## Use it from an AI agent (MCP)
 
 `kx402-mcp` speaks the Model Context Protocol over stdio, so MCP-capable
-agents get three tools — `kx402_probe`, `kx402_balance`, `kx402_pay` —
-without leaving their chat:
+agents get four tools without leaving their chat:
+
+| Tool | What it does | Spends? |
+|---|---|---|
+| `kx402_probe` | Decode an endpoint's 402 challenge: every option with price and payee. | No |
+| `kx402_inspect` | Report exactly what `kx402_pay` would sign and whether it passes the price cap. Needs no wallet. | No |
+| `kx402_balance` | An address's KITE and stablecoin balances on a Kite network. | No |
+| `kx402_pay` | Sign and pay, returning the content and the settlement receipt. | **Yes** |
+
+Agents should call `kx402_inspect` before `kx402_pay` whenever the price
+matters; an unaffordable endpoint comes back as a normal answer saying the
+payment would be refused, not as an error:
 
 ```json
 {
   "mcpServers": {
     "kx402": {
       "command": "kx402-mcp",
-      "env": { "KITE_PRIVATE_KEY": "0x…", "KITE_PROXY": "socks5://127.0.0.1:10800" }
+      "env": {
+        "KITE_PRIVATE_KEY": "0x…",
+        "KITE_PROXY": "socks5://127.0.0.1:10800",
+        "KITE_MAX_PAYMENT_USD": "1"
+      }
     }
   }
 }
 ```
+
+`KITE_PRIVATE_KEY` is only needed for `kx402_pay` (and to default
+`kx402_balance` to the wallet's own address); with it unset the server
+still probes, inspects and queries balances, so a read-only deployment is
+just the server without the key.
 
 The key lives in the server environment and is never returned to the agent.
 Each `kx402_pay` is capped at `KITE_MAX_PAYMENT_USD` (default **$1**) by the

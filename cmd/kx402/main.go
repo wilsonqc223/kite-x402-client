@@ -5,6 +5,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -134,7 +135,7 @@ func cmdPay(args []string) error {
 	result, err := x402.Pay(httpClient, fs.Arg(0), *method, body, headers, signer, *option,
 		x402.WithMaxAmountUSD(*maxUSD))
 	if err != nil {
-		return err
+		return withCapHint(err, " (raise it with -max-usd)")
 	}
 
 	if result.Paid {
@@ -164,9 +165,10 @@ func cmdPay(args []string) error {
 	return nil
 }
 
-// runDryRun writes the payment decision for url to out and reports whether
-// `kx402 pay` would go ahead and sign. It sends one unpaid request and
-// never loads a key.
+// runDryRun inspects url and writes what `kx402 pay` would do to out,
+// reporting whether it would go ahead and sign. It sends one unpaid request
+// and never signs, so it loads no key; the configured wallet's address is
+// shown when there is one.
 func runDryRun(
 	httpClient *http.Client,
 	rawURL, method string,
@@ -181,44 +183,21 @@ func runDryRun(
 	if err != nil {
 		return false, err
 	}
-	fmt.Fprintln(out, "dry run — nothing was signed or sent")
-	if !got.PaidEndpoint {
-		fmt.Fprintf(out, "%s answered %d without a 402 challenge — nothing to pay\n", rawURL, got.Status)
-		fmt.Fprintf(out, "%s\n", got.Body)
-		return true, nil
+	wouldPay := cli.WriteInspection(out, rawURL, optionIndex, got, cli.WalletAddressFromEnv())
+	if !wouldPay && got.Refusal != "" {
+		fmt.Fprintln(out, "to raise the cap, pass -max-usd (0 disables it)")
 	}
+	return wouldPay, nil
+}
 
-	total := len(got.Challenge.Accepts)
-	chain, known := cli.ChainByNetwork(got.Option.Network)
-	fmt.Fprintf(out, "%s answered 402 with %d payment option(s); pay would sign option %d:\n",
-		rawURL, total, got.OptionIndex)
-	if optionIndex < 0 {
-		fmt.Fprintln(out, "  (chosen automatically: the first option on a Kite network)")
+// withCapHint appends how to raise the cap on this surface to a price-cap
+// error, leaving every other error untouched.
+func withCapHint(err error, hint string) error {
+	var capErr *x402.PriceCapError
+	if errors.As(err, &capErr) {
+		return fmt.Errorf("%w%s", err, hint)
 	}
-	fmt.Fprintf(out, "  network:  %s\n", got.Option.Network)
-	fmt.Fprintf(out, "  price:    %s %s  (%s units)\n",
-		cli.FormatUnits(got.Option.Amount, chain, known), chain.AssetSymbol, got.Option.Amount)
-	fmt.Fprintf(out, "  asset:    %s\n", got.Option.Asset)
-	fmt.Fprintf(out, "  payTo:    %s\n", got.Option.PayTo)
-	fmt.Fprintf(out, "  validity: %ds\n", got.Option.MaxTimeoutSeconds)
-	if name, ok := got.Option.Extra["name"].(string); ok {
-		fmt.Fprintf(out, "  token:    %s\n", name)
-	}
-
-	switch {
-	case got.CapUSD == "0":
-		fmt.Fprintln(out, "price cap: disabled (-max-usd 0)")
-	case got.WithinCap:
-		fmt.Fprintf(out, "price cap: $%s — within cap\n", got.CapUSD)
-	default:
-		fmt.Fprintf(out, "price cap: $%s — pay would REFUSE: %s\n", got.CapUSD, got.Refusal)
-	}
-	if key := strings.TrimSpace(os.Getenv("KITE_PRIVATE_KEY")); key != "" {
-		if signer, err := x402.NewSignerFromHex(key); err == nil {
-			fmt.Fprintf(out, "wallet:    %s (KITE_PRIVATE_KEY; balance not checked)\n", signer.Address())
-		}
-	}
-	return got.WithinCap, nil
+	return err
 }
 
 // headerList collects repeatable -H K:V flags.

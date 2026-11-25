@@ -3,6 +3,7 @@ package x402
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -121,7 +122,7 @@ func twoOptionChallenge() PaymentRequired {
 func TestPayHappyPathPaysTheAutoSelectedOption(t *testing.T) {
 	endpoint := &paidEndpoint{challenge: twoOptionChallenge()}
 	server := endpoint.start(t)
-	signer, err := NewSignerFromHex(testPrivateKey)
+	signer, err := NewSignerFromHex(newTestKeyHex(t))
 	if err != nil {
 		t.Fatalf("NewSignerFromHex: %v", err)
 	}
@@ -161,7 +162,7 @@ func TestPayHappyPathPaysTheAutoSelectedOption(t *testing.T) {
 func TestPayExplicitOptionIndexPicksThatOption(t *testing.T) {
 	endpoint := &paidEndpoint{challenge: twoOptionChallenge()}
 	server := endpoint.start(t)
-	signer, _ := NewSignerFromHex(testPrivateKey)
+	signer, _ := NewSignerFromHex(newTestKeyHex(t))
 
 	result, err := Pay(http.DefaultClient, server.URL+"/v1/x", http.MethodGet, nil, nil, signer, 1)
 	if err != nil {
@@ -178,7 +179,7 @@ func TestPayExplicitOptionIndexPicksThatOption(t *testing.T) {
 func TestPayOutOfRangeOptionIsAnError(t *testing.T) {
 	endpoint := &paidEndpoint{challenge: twoOptionChallenge()}
 	server := endpoint.start(t)
-	signer, _ := NewSignerFromHex(testPrivateKey)
+	signer, _ := NewSignerFromHex(newTestKeyHex(t))
 
 	if _, err := Pay(http.DefaultClient, server.URL, http.MethodGet, nil, nil, signer, 5); err == nil {
 		t.Error("Pay with option 5 of 2 = nil error, want error")
@@ -188,7 +189,7 @@ func TestPayOutOfRangeOptionIsAnError(t *testing.T) {
 func TestPayPassesThroughFreeEndpoints(t *testing.T) {
 	endpoint := &paidEndpoint{free: true}
 	server := endpoint.start(t)
-	signer, _ := NewSignerFromHex(testPrivateKey)
+	signer, _ := NewSignerFromHex(newTestKeyHex(t))
 
 	result, err := Pay(http.DefaultClient, server.URL, http.MethodGet, nil, nil, signer, -1)
 	if err != nil {
@@ -202,7 +203,7 @@ func TestPayPassesThroughFreeEndpoints(t *testing.T) {
 func TestPaySurfacesTheRejectionChallenge(t *testing.T) {
 	endpoint := &paidEndpoint{challenge: twoOptionChallenge(), reject: true}
 	server := endpoint.start(t)
-	signer, _ := NewSignerFromHex(testPrivateKey)
+	signer, _ := NewSignerFromHex(newTestKeyHex(t))
 
 	result, err := Pay(http.DefaultClient, server.URL, http.MethodGet, nil, nil, signer, -1)
 	if err != nil {
@@ -232,7 +233,7 @@ func TestPayPreservesMethodBodyAndHeaders(t *testing.T) {
 		w.WriteHeader(http.StatusPaymentRequired)
 	}))
 	defer server.Close()
-	signer, _ := NewSignerFromHex(testPrivateKey)
+	signer, _ := NewSignerFromHex(newTestKeyHex(t))
 
 	if _, err := Pay(http.DefaultClient, server.URL, http.MethodPost, []byte(`{"q":1}`),
 		[][2]string{{"X-Trace", "abc"}}, signer, -1); err != nil {
@@ -263,7 +264,7 @@ func TestPayRefusesAPriceAboveTheDefaultCapBeforeSigning(t *testing.T) {
 	// 5 pieUSD = 5 * 10^18 units, far above the $1 default.
 	endpoint := &paidEndpoint{challenge: pricedChallenge(kite.Testnet.Network, "5000000000000000000")}
 	server := endpoint.start(t)
-	signer, _ := NewSignerFromHex(testPrivateKey)
+	signer, _ := NewSignerFromHex(newTestKeyHex(t))
 
 	result, err := Pay(http.DefaultClient, server.URL, http.MethodGet, nil, nil, signer, -1)
 	if err == nil || !strings.Contains(err.Error(), "per-payment cap") {
@@ -289,7 +290,7 @@ func TestPayCapCanBeRaisedAndDisabled(t *testing.T) {
 	} {
 		endpoint := &paidEndpoint{challenge: pricedChallenge(kite.Testnet.Network, "2000000000000000")}
 		server := endpoint.start(t)
-		signer, _ := NewSignerFromHex(testPrivateKey)
+		signer, _ := NewSignerFromHex(newTestKeyHex(t))
 
 		result, err := Pay(http.DefaultClient, server.URL, http.MethodGet, nil, nil, signer, -1,
 			WithMaxAmountUSD(tc.cap))
@@ -318,7 +319,7 @@ func TestPayAutoSelectSkipsNetworksThisToolkitCannotPayOn(t *testing.T) {
 	}
 	endpoint := &paidEndpoint{challenge: challenge}
 	server := endpoint.start(t)
-	signer, _ := NewSignerFromHex(testPrivateKey)
+	signer, _ := NewSignerFromHex(newTestKeyHex(t))
 
 	result, err := Pay(http.DefaultClient, server.URL, http.MethodGet, nil, nil, signer, -1)
 	if err != nil {
@@ -337,7 +338,7 @@ func TestPaidIsFalseWhenTheProtectedHandlerFails(t *testing.T) {
 	// settled — the request was not paid for.
 	endpoint := &paidEndpoint{challenge: twoOptionChallenge(), failAfter: http.StatusInternalServerError}
 	server := endpoint.start(t)
-	signer, _ := NewSignerFromHex(testPrivateKey)
+	signer, _ := NewSignerFromHex(newTestKeyHex(t))
 
 	result, err := Pay(http.DefaultClient, server.URL, http.MethodGet, nil, nil, signer, -1)
 	if err != nil {
@@ -458,5 +459,32 @@ func TestInspectPassesAFreeEndpointThrough(t *testing.T) {
 	}
 	if !strings.Contains(string(got.Body), "free content") {
 		t.Errorf("body = %s", got.Body)
+	}
+}
+
+func TestPriceCapRefusalIsATypedErrorThatStatesOnlyTheFact(t *testing.T) {
+	endpoint := &paidEndpoint{challenge: pricedChallenge(kite.Testnet.Network, "5000000000000000000")}
+	server := endpoint.start(t)
+	signer, _ := NewSignerFromHex(newTestKeyHex(t))
+
+	_, err := Pay(http.DefaultClient, server.URL, http.MethodGet, nil, nil, signer, -1)
+	var capErr *PriceCapError
+	if !errors.As(err, &capErr) {
+		t.Fatalf("want a *PriceCapError, got %T: %v", err, err)
+	}
+	if capErr.Amount != "5000000000000000000" || capErr.Network != kite.Testnet.Network || capErr.CapUSD != DefaultMaxPaymentUSD {
+		t.Errorf("cap error fields = %+v", capErr)
+	}
+	// How to raise the cap differs per surface (a CLI flag, an environment
+	// variable), so the library must not name either.
+	if strings.Contains(err.Error(), "-max-usd") || strings.Contains(err.Error(), "KITE_MAX_PAYMENT_USD") {
+		t.Errorf("library error names a surface-specific knob: %v", err)
+	}
+
+	// Errors that are not about the cap must not be mistaken for one.
+	_, err = Pay(http.DefaultClient, server.URL, http.MethodGet, nil, nil, signer, 9)
+	var alsoCap *PriceCapError
+	if err == nil || errors.As(err, &alsoCap) {
+		t.Errorf("an out-of-range option is not a cap error: %v", err)
 	}
 }

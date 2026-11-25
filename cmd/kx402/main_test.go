@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -227,5 +228,31 @@ func TestRunDryRunRefusesAboveTheCapWithoutAServerRoundTripForPayment(t *testing
 	out.Reset()
 	if wouldPay, _ = runDryRun(http.DefaultClient, server.URL, "GET", nil, nil, -1, "10", &out); !wouldPay {
 		t.Errorf("cap 10 must pass:\n%s", out.String())
+	}
+}
+
+func TestOnlyCapErrorsGetTheCommandLineHint(t *testing.T) {
+	plain := errors.New("something else went wrong")
+	if got := withCapHint(plain, " (raise it with -max-usd)"); got != plain {
+		t.Errorf("a non-cap error must pass through unchanged, got %v", got)
+	}
+	capErr := &x402.PriceCapError{Amount: "1", Network: "eip155:2368", CapUSD: "1"}
+	got := withCapHint(capErr, " (raise it with -max-usd)")
+	if !strings.Contains(got.Error(), "(raise it with -max-usd)") || !errors.Is(got, capErr) {
+		t.Errorf("a cap error must gain the flag hint and stay unwrappable, got %v", got)
+	}
+}
+
+func TestDryRunRefusalNamesTheFlagExactlyOnce(t *testing.T) {
+	server := dryRunEndpoint(t, "5000000000000000000") // 5 pieUSD
+	defer server.Close()
+
+	var out strings.Builder
+	wouldPay, err := runDryRun(http.DefaultClient, server.URL, "GET", nil, nil, -1, "1", &out)
+	if err != nil || wouldPay {
+		t.Fatalf("want a refusal, got wouldPay=%v err=%v", wouldPay, err)
+	}
+	if got := strings.Count(out.String(), "-max-usd"); got != 1 {
+		t.Errorf("the report mentions -max-usd %d times, want exactly once:\n%s", got, out.String())
 	}
 }

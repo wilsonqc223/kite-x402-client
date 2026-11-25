@@ -15,7 +15,9 @@ func TestLoadKeyRefusesAWorldReadableKeyFile(t *testing.T) {
 		t.Skip("POSIX permission bits do not apply")
 	}
 	dir := t.TempDir()
-	secret := "0xabcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	// Stand-in file content: LoadKey only trims and returns it, and it must
+	// not look like key material.
+	secret := "key-file contents for the permission test"
 
 	lax := filepath.Join(dir, "lax.key")
 	if err := os.WriteFile(lax, []byte(secret+"\n"), 0o644); err != nil {

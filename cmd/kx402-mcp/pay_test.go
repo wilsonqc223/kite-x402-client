@@ -155,7 +155,7 @@ func TestToolsListAdvertisesInspect(t *testing.T) {
 	if inspect.InputSchema["type"] != "object" || inspect.Description == "" {
 		t.Errorf("kx402_inspect definition incomplete: %+v", inspect)
 	}
-	for _, prop := range []string{"url", "option"} {
+	for _, prop := range []string{"url", "option", "network"} {
 		if _, ok := inspect.InputSchema["properties"].(map[string]any)[prop]; !ok {
 			t.Errorf("kx402_inspect schema lacks property %q", prop)
 		}
@@ -268,6 +268,64 @@ func TestInspectRequiresAURL(t *testing.T) {
 	}
 	if !result.IsError || !strings.Contains(result.Content[0].Text, "url is required") {
 		t.Errorf("missing url must be a tool error, got %+v", result)
+	}
+}
+
+// callToolRaw calls a tool with arguments as written, for fields the typed
+// helpers do not carry.
+func callToolRaw(t *testing.T, tool, arguments string) (toolCallResult, *rpcError) {
+	t.Helper()
+	params, _ := json.Marshal(map[string]any{"name": tool, "arguments": json.RawMessage(arguments)})
+	raw, rpcErr := callTool(params, "")
+	if rpcErr != nil {
+		return toolCallResult{}, rpcErr
+	}
+	var result toolCallResult
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatal(err)
+	}
+	return result, nil
+}
+
+func TestInspectAndPayTakeANetworkInsteadOfAnIndex(t *testing.T) {
+	t.Setenv("KITE_PRIVATE_KEY", "")
+	// Option 0 is a chain this toolkit cannot sign for; option 1 is Kite testnet.
+	server, accepted := paidMock(t, twoChainChallengeJSON("1000000000000000"))
+	url := server.URL + "/v1/x"
+
+	result, rpcErr := callToolRaw(t, "kx402_inspect", `{"url":"`+url+`","network":"testnet"}`)
+	if rpcErr != nil || result.IsError {
+		t.Fatalf("kx402_inspect with network=testnet failed: %+v %v", result, rpcErr)
+	}
+	if report := result.Content[0].Text; !strings.Contains(report, "pay would sign option 1") ||
+		!strings.Contains(report, "chosen by network: the option on eip155:2368") {
+		t.Errorf("the report must name the option on the requested network:\n%s", report)
+	}
+
+	t.Setenv("KITE_PRIVATE_KEY", newTestKeyHex(t))
+	// A network the challenge does not offer fails for the agent, and an
+	// index together with a network is a mistake rather than a preference.
+	// Neither signs anything.
+	for _, arguments := range []string{
+		`{"url":"` + url + `","network":"mainnet"}`,
+		`{"url":"` + url + `","network":"testnet","option":1}`,
+	} {
+		result, rpcErr = callToolRaw(t, "kx402_pay", arguments)
+		if rpcErr == nil && !result.IsError {
+			t.Errorf("kx402_pay with %s must fail: %+v", arguments, result)
+		}
+	}
+	if got := atomic.LoadInt32(accepted); got != 0 {
+		t.Errorf("server received %d signed payments, want 0", got)
+	}
+
+	// The network the challenge does offer is paid, on that option.
+	result, rpcErr = callToolRaw(t, "kx402_pay", `{"url":"`+url+`","network":"testnet"}`)
+	if rpcErr != nil || result.IsError {
+		t.Fatalf("kx402_pay with network=testnet failed: %+v %v", result, rpcErr)
+	}
+	if got := atomic.LoadInt32(accepted); got != 1 {
+		t.Errorf("server received %d signed payments, want 1", got)
 	}
 }
 

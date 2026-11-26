@@ -11,7 +11,7 @@ import (
 
 func TestWriteInspectionShowsAShortBodyWhole(t *testing.T) {
 	var out strings.Builder
-	WriteInspection(&out, "http://x/", -1, x402.Inspection{Status: 200, Body: []byte(`{"free":true}`)}, "")
+	WriteInspection(&out, "http://x/", x402.Inspection{Status: 200, Body: []byte(`{"free":true}`)}, "")
 	got := out.String()
 	if !strings.Contains(got, `{"free":true}`+"\n") || strings.Contains(got, "not shown") {
 		t.Errorf("a short body is shown whole, with no note:\n%s", got)
@@ -21,7 +21,7 @@ func TestWriteInspectionShowsAShortBodyWhole(t *testing.T) {
 func TestWriteInspectionShowsTheStartOfABigBodyAndSaysHowMuchIsLeftOut(t *testing.T) {
 	body := bytes.Repeat([]byte("a"), 3*inspectPreviewBytes)
 	var out strings.Builder
-	WriteInspection(&out, "http://x/", -1, x402.Inspection{Status: 200, Body: body}, "")
+	WriteInspection(&out, "http://x/", x402.Inspection{Status: 200, Body: body}, "")
 	got := out.String()
 	if strings.Contains(got, strings.Repeat("a", inspectPreviewBytes+1)) {
 		t.Errorf("the report shows more than %d bytes of the body", inspectPreviewBytes)
@@ -34,7 +34,7 @@ func TestWriteInspectionShowsTheStartOfABigBodyAndSaysHowMuchIsLeftOut(t *testin
 
 func TestWriteInspectionNotesABodyCutOffAtTheReadingLimit(t *testing.T) {
 	var out strings.Builder
-	WriteInspection(&out, "http://x/", -1, x402.Inspection{
+	WriteInspection(&out, "http://x/", x402.Inspection{
 		Status:        200,
 		Body:          bytes.Repeat([]byte("a"), inspectPreviewBytes+1),
 		BodyTruncated: true,

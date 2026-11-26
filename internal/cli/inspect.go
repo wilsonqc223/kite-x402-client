@@ -13,10 +13,10 @@ import (
 // rendering shared by `kx402 pay -dry-run` and the MCP server's inspect
 // tool, so a CLI user and an agent are told exactly the same thing.
 //
-// requestedOption is the option index the caller asked for (-1 for
-// auto-select) and walletAddress, when non-empty, the payer that would be
-// charged.
-func WriteInspection(out io.Writer, rawURL string, requestedOption int, got x402.Inspection, walletAddress string) bool {
+// walletAddress, when non-empty, is the payer that would be charged. How the
+// option was chosen comes from the inspection itself, so the report cannot
+// disagree with the library about it.
+func WriteInspection(out io.Writer, rawURL string, got x402.Inspection, walletAddress string) bool {
 	fmt.Fprintln(out, "dry run — nothing was signed or sent")
 	if !got.PaidEndpoint {
 		fmt.Fprintf(out, "%s answered %d without a 402 challenge — nothing to pay\n", rawURL, got.Status)
@@ -27,8 +27,11 @@ func WriteInspection(out io.Writer, rawURL string, requestedOption int, got x402
 	chain, known := ChainByNetwork(got.Option.Network)
 	fmt.Fprintf(out, "%s answered 402 with %d payment option(s); pay would sign option %d:\n",
 		rawURL, len(got.Challenge.Accepts), got.OptionIndex)
-	if requestedOption < 0 {
+	switch got.Selection {
+	case x402.AutoSelected:
 		fmt.Fprintln(out, "  (chosen automatically: the first option on a Kite network)")
+	case x402.SelectedByNetwork:
+		fmt.Fprintf(out, "  (chosen by network: the option on %s)\n", got.Option.Network)
 	}
 	fmt.Fprintf(out, "  network:  %s\n", got.Option.Network)
 	fmt.Fprintf(out, "  price:    %s %s  (%s units)\n",

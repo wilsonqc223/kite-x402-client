@@ -59,6 +59,9 @@ type PayResult struct {
 type payConfig struct {
 	maxAmountUSD string
 	maxBodyBytes int64
+	// network selects the advertised option by the Kite network it settles
+	// on instead of by index; "" leaves the choice to the index.
+	network string
 }
 
 // PayOption customises Pay and Inspect.
@@ -82,6 +85,47 @@ func WithMaxBodyBytes(n int64) PayOption {
 	}
 }
 
+// WithNetwork picks the advertised option that settles on a Kite network —
+// "mainnet", "testnet" or a CAIP-2 id such as "eip155:2368" — instead of by
+// index. It cannot be combined with an option index, and a challenge that
+// advertises nothing on that network is refused before anything is signed.
+func WithNetwork(name string) PayOption {
+	return func(c *payConfig) { c.network = name }
+}
+
+// selectOptionOnNetwork resolves a network name to the one advertised option
+// on it. The names are the ones kite.ByNetwork accepts.
+func selectOptionOnNetwork(challenge PaymentRequired, index int, name string) (PaymentRequirements, int, error) {
+	chain, err := kite.ByNetwork(name)
+	if err != nil {
+		return PaymentRequirements{}, 0, err
+	}
+	if index >= 0 {
+		return PaymentRequirements{}, 0, fmt.Errorf(
+			"payment option %d and network %s were both requested; pass one or the other", index, name)
+	}
+	for i, option := range challenge.Accepts {
+		if option.Network == chain.Network {
+			return option, i, nil
+		}
+	}
+	return PaymentRequirements{}, 0, fmt.Errorf(
+		"the challenge advertises %d payment option(s), none on %s", len(challenge.Accepts), chain.Network)
+}
+
+// Selection says how an inspection resolved its option.
+type Selection string
+
+const (
+	// AutoSelected is the first option on a Kite network this toolkit can
+	// pay on, falling back to accepts[0] when none match.
+	AutoSelected Selection = "auto"
+	// SelectedByIndex is the option at the caller's index.
+	SelectedByIndex Selection = "index"
+	// SelectedByNetwork is the option on the network named with WithNetwork.
+	SelectedByNetwork Selection = "network"
+)
+
 // Inspection describes what Pay would do for an endpoint, without signing
 // or sending a payment. It is the read-only half of Pay: the same unpaid
 // request, the same option selection and the same price-cap check.
@@ -100,6 +144,8 @@ type Inspection struct {
 	OptionIndex int
 	// Option is the advertised option Pay would sign.
 	Option PaymentRequirements
+	// Selection says how Option was chosen.
+	Selection Selection
 	// CapUSD is the per-payment cap that was applied ("" when disabled).
 	CapUSD string
 	// WithinCap reports whether Option's price passes the cap. A violation is
@@ -158,6 +204,7 @@ func Inspect(
 		Challenge:    plan.challenge,
 		OptionIndex:  plan.index,
 		Option:       plan.option,
+		Selection:    plan.selection,
 		CapUSD:       plan.config.maxAmountUSD,
 		WithinCap:    plan.capErr == nil,
 		Refusal:      errText(plan.capErr),
@@ -173,6 +220,7 @@ type plan struct {
 	index     int
 	config    payConfig
 	capErr    error
+	selection Selection
 }
 
 // inspect issues the unpaid request and resolves the payment plan. Exactly
@@ -206,7 +254,18 @@ func inspect(
 	// needed and must not linger on the connection pool.
 	resp.Body.Close()
 
-	option, index, err := selectOption(*challenge, optionIndex)
+	selection := SelectedByIndex
+	var option PaymentRequirements
+	var index int
+	if config.network != "" {
+		selection = SelectedByNetwork
+		option, index, err = selectOptionOnNetwork(*challenge, optionIndex, config.network)
+	} else {
+		option, index, err = selectOption(*challenge, optionIndex)
+		if optionIndex < 0 {
+			selection = AutoSelected
+		}
+	}
 	if err != nil {
 		return nil, nil, err
 	}
@@ -214,6 +273,7 @@ func inspect(
 		challenge: challenge,
 		option:    option,
 		index:     index,
+		selection: selection,
 		config:    config,
 		capErr:    checkPriceCap(option, config.maxAmountUSD),
 	}, nil, nil

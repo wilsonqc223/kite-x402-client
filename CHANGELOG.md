@@ -24,6 +24,8 @@ adheres to [Semantic Versioning](https://semver.org/).
 - A dry run, and the MCP inspect tool, advised raising the price cap on every
   refusal — including a cap that is not a price, which raising cannot cure.
   The advice now appears only when the price is above the cap.
+- `kx402 help` was out of date: it listed four of `pay`'s flags and neither
+  the `wallet` nor the `version` command.
 
 ### Added
 
@@ -33,6 +35,21 @@ adheres to [Semantic Versioning](https://semver.org/).
   answer, not a tool error. `kx402_pay`'s description now points at it.
   The CLI's `-dry-run` and the MCP tool render through one function, so
   both say the same thing about the same endpoint.
+- **Pick the option by network.** `kx402 pay -network mainnet` (also
+  `testnet` or a CAIP-2 id) pays the option on that Kite network instead of
+  the first one the toolkit recognizes; the same `network` argument exists on
+  `kx402_inspect` and `kx402_pay`, and library users have `x402.WithNetwork`.
+  A network the challenge does not offer is refused before anything is
+  signed, and it cannot be combined with an option index. An inspection now
+  says how its option was chosen (`x402.Selection`), so the dry-run report
+  says "chosen by network" instead of "chosen automatically".
+- **The documentation a first-time user needs.** README sections for
+  requirements, configuration, the place in the Kite AI ecosystem (with the
+  source locations of the Kite specifics), and known limitations — including
+  what has been run for real and what has not: the signature format is
+  checked against the live facilitator, settlement only behind a mock one.
+  `.env.example` documents every environment variable, and `ATTRIBUTION.md`
+  names the Apache-2.0 sources the network constants follow.
 
 ### Changed
 

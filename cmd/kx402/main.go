@@ -55,19 +55,36 @@ func usage() {
 	fmt.Fprint(os.Stderr, `kx402 — x402 client toolkit for the Kite AI chains
 
   kx402 probe <url>          Fetch a URL and decode its 402 payment challenge
-  kx402 receipt <base64>     Decode a PAYMENT-RESPONSE settlement receipt
-  kx402 balance [addr]       Native KITE + stablecoin balance on one chain
+  kx402 pay [flags] <url>    Pay the 402 challenge and fetch the content
+  kx402 receipt <base64|->   Decode a PAYMENT-RESPONSE settlement receipt
+  kx402 balance [addr]       Native KITE + stablecoin balance on one network
+  kx402 wallet               The configured wallet's address and balances
+  kx402 version              Print the version this binary was built at
 
-  kx402 pay <url>            Pay the 402 challenge and fetch the content
+  kx402 pay flags:
     -X, -method GET          HTTP method for the paid request
+    -d, -data @file|-|TEXT   Request body: a file, stdin, or a literal string
     -H, -header K:V          Extra header, repeatable
     -o, -option N            Pay accepts[N] instead of auto-selecting
+    -network NAME            Pay the option on a Kite network: mainnet,
+                              testnet or a CAIP-2 id. Not together with -o.
+    -max-usd USD             Refuse a payment above this price (default $1;
+                              0 disables the cap)
+    -dry-run                 Report what would be paid; sign and send nothing
+    -max-body-bytes N        Read at most N bytes of the response (8 MiB)
     -key-file PATH           Private key file (else $KITE_PRIVATE_KEY)
+    -proxy URL               Egress proxy, e.g. socks5://127.0.0.1:10800
+
+  probe and balance take -proxy URL as well.
 
 Environment:
-  KITE_PRIVATE_KEY  0x-prefixed private key used by 'pay' (never a CLI
-                    argument, so it cannot leak into shell history)
-  KITE_NETWORK      network for 'balance' (default testnet) and asset labels
+  KITE_PRIVATE_KEY      Private key for 'pay': 64 hex characters, with or
+                        without 0x. Never a CLI argument, so it cannot leak
+                        into shell history.
+  KITE_MAX_PAYMENT_USD  Default for -max-usd, and the only cap the MCP
+                        server kx402-mcp knows.
+  KITE_NETWORK          Network for 'balance' (default testnet).
+  KITE_PROXY            Egress proxy for kx402-mcp.
 `)
 }
 
@@ -92,6 +109,8 @@ func cmdPay(args []string) error {
 		"report what would be paid — option, price, cap verdict — without signing or sending (no wallet needed); exit 3 if pay would refuse")
 	maxBody := fs.Int64("max-body-bytes", x402.DefaultMaxBodyBytes,
 		"read at most this many bytes of the response; a longer body is cut off and reported on stderr")
+	network := fs.String("network", "",
+		"pay the option on this Kite network (mainnet, testnet or a CAIP-2 id such as eip155:2366); cannot be combined with -o")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: kx402 pay [flags] <url>")
 		fs.PrintDefaults()
@@ -112,11 +131,18 @@ func cmdPay(args []string) error {
 	if err != nil {
 		return err
 	}
+	if *network != "" && *option >= 0 {
+		return fmt.Errorf("-network and -o cannot be combined; pass one or the other")
+	}
+	payOpts := []x402.PayOption{x402.WithMaxAmountUSD(*maxUSD), x402.WithMaxBodyBytes(*maxBody)}
+	if *network != "" {
+		payOpts = append(payOpts, x402.WithNetwork(*network))
+	}
 
 	if *dryRun {
 		// Nothing is signed on this path, so no key is required and a missing
 		// one must not block an audit.
-		wouldPay, err := runDryRun(httpClient, fs.Arg(0), *method, body, headers, *option, *maxUSD, *maxBody, os.Stdout)
+		wouldPay, err := runDryRun(httpClient, fs.Arg(0), *method, body, headers, *option, payOpts, os.Stdout)
 		if err != nil {
 			return err
 		}
@@ -134,8 +160,7 @@ func cmdPay(args []string) error {
 	if err != nil {
 		return err
 	}
-	result, err := x402.Pay(httpClient, fs.Arg(0), *method, body, headers, signer, *option,
-		x402.WithMaxAmountUSD(*maxUSD), x402.WithMaxBodyBytes(*maxBody))
+	result, err := x402.Pay(httpClient, fs.Arg(0), *method, body, headers, signer, *option, payOpts...)
 	if err != nil {
 		return withCapHint(err, " (raise it with -max-usd)")
 	}
@@ -182,16 +207,14 @@ func runDryRun(
 	body []byte,
 	headers [][2]string,
 	optionIndex int,
-	maxUSD string,
-	maxBodyBytes int64,
+	payOpts []x402.PayOption,
 	out io.Writer,
 ) (bool, error) {
-	got, err := x402.Inspect(httpClient, rawURL, method, body, headers, optionIndex,
-		x402.WithMaxAmountUSD(maxUSD), x402.WithMaxBodyBytes(maxBodyBytes))
+	got, err := x402.Inspect(httpClient, rawURL, method, body, headers, optionIndex, payOpts...)
 	if err != nil {
 		return false, err
 	}
-	wouldPay := cli.WriteInspection(out, rawURL, optionIndex, got, cli.WalletAddressFromEnv())
+	wouldPay := cli.WriteInspection(out, rawURL, got, cli.WalletAddressFromEnv())
 	// Raising the cap cures only a price above it. A malformed price or an
 	// unusable cap is reported above, and this advice would be wrong there.
 	if got.CapExceeded {

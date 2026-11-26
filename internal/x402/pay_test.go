@@ -451,6 +451,76 @@ func TestInspectHonorsTheRequestedOption(t *testing.T) {
 	}
 }
 
+func TestInspectPicksTheOptionOnTheRequestedNetwork(t *testing.T) {
+	endpoint := &paidEndpoint{challenge: twoOptionChallenge()} // index 0 testnet, index 1 mainnet
+	server := endpoint.start(t)
+
+	for _, tc := range []struct {
+		requested   string
+		wantNetwork string
+		wantIndex   int
+	}{
+		{"mainnet", kite.Mainnet.Network, 1},
+		{"eip155:2366", kite.Mainnet.Network, 1},
+		{"testnet", kite.Testnet.Network, 0},
+	} {
+		got, err := Inspect(http.DefaultClient, server.URL, http.MethodGet, nil, nil, -1, WithNetwork(tc.requested))
+		if err != nil {
+			t.Fatalf("WithNetwork(%q): %v", tc.requested, err)
+		}
+		if got.OptionIndex != tc.wantIndex || got.Option.Network != tc.wantNetwork || got.Selection != SelectedByNetwork {
+			t.Errorf("WithNetwork(%q) = option %d on %s (selection %q), want option %d on %s (selection %q)",
+				tc.requested, got.OptionIndex, got.Option.Network, got.Selection,
+				tc.wantIndex, tc.wantNetwork, SelectedByNetwork)
+		}
+	}
+
+	// Without a network the index decides, and the inspection says which of
+	// the ways chose the option.
+	for _, tc := range []struct {
+		index int
+		want  Selection
+	}{{1, SelectedByIndex}, {-1, AutoSelected}} {
+		got, err := Inspect(http.DefaultClient, server.URL, http.MethodGet, nil, nil, tc.index)
+		if err != nil || got.Selection != tc.want {
+			t.Errorf("index %d: selection %q err=%v, want %q", tc.index, got.Selection, err, tc.want)
+		}
+	}
+}
+
+func TestPayOnANetworkTheChallengeDoesNotOfferSignsNothing(t *testing.T) {
+	endpoint := &paidEndpoint{challenge: pricedChallenge(kite.Testnet.Network, "1000000000000000")} // testnet only
+	var signed atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(HeaderPaymentSignature) != "" {
+			signed.Add(1)
+		}
+		endpoint.handler(w, r)
+	}))
+	defer server.Close()
+	signer, _ := NewSignerFromHex(newTestKeyHex(t))
+
+	for _, network := range []string{"mainnet", "eip155:1"} {
+		if _, err := Pay(http.DefaultClient, server.URL, http.MethodGet, nil, nil, signer, -1, WithNetwork(network)); err == nil {
+			t.Errorf("WithNetwork(%q) must be refused: the challenge offers testnet only", network)
+		}
+	}
+	// An index and a network name one choice twice; refusing beats guessing.
+	if _, err := Pay(http.DefaultClient, server.URL, http.MethodGet, nil, nil, signer, 0, WithNetwork("testnet")); err == nil ||
+		!strings.Contains(err.Error(), "pass one or the other") {
+		t.Errorf("an index and a network together must be refused, got %v", err)
+	}
+	if got := signed.Load(); got != 0 {
+		t.Errorf("server received %d signed requests, want 0", got)
+	}
+
+	// The network the challenge does offer is paid as usual.
+	result, err := Pay(http.DefaultClient, server.URL, http.MethodGet, nil, nil, signer, -1, WithNetwork("testnet"))
+	if err != nil || !result.Paid || result.Option != 0 {
+		t.Errorf("WithNetwork(\"testnet\"): paid=%v option=%d err=%v, want option 0 paid", result.Paid, result.Option, err)
+	}
+}
+
 func TestInspectPassesAFreeEndpointThrough(t *testing.T) {
 	endpoint := &paidEndpoint{free: true}
 	server := endpoint.start(t)

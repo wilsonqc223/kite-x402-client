@@ -188,7 +188,7 @@ func TestRunDryRunReportsTheDecisionAndSignsNothing(t *testing.T) {
 	defer server.Close()
 
 	var out strings.Builder
-	wouldPay, err := runDryRun(http.DefaultClient, server.URL, "GET", nil, nil, -1, "1", x402.DefaultMaxBodyBytes, &out)
+	wouldPay, err := runDryRun(http.DefaultClient, server.URL, "GET", nil, nil, -1, []x402.PayOption{x402.WithMaxAmountUSD("1")}, &out)
 	if err != nil {
 		t.Fatalf("runDryRun: %v", err)
 	}
@@ -213,7 +213,7 @@ func TestRunDryRunRefusesAboveTheCapWithoutAServerRoundTripForPayment(t *testing
 	defer server.Close()
 
 	var out strings.Builder
-	wouldPay, err := runDryRun(http.DefaultClient, server.URL, "GET", nil, nil, -1, "1", x402.DefaultMaxBodyBytes, &out)
+	wouldPay, err := runDryRun(http.DefaultClient, server.URL, "GET", nil, nil, -1, []x402.PayOption{x402.WithMaxAmountUSD("1")}, &out)
 	if err != nil {
 		t.Fatalf("a refused payment is a finding, not an error: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestRunDryRunRefusesAboveTheCapWithoutAServerRoundTripForPayment(t *testing
 
 	// The same endpoint passes when the caller raises the cap.
 	out.Reset()
-	if wouldPay, _ = runDryRun(http.DefaultClient, server.URL, "GET", nil, nil, -1, "10", x402.DefaultMaxBodyBytes, &out); !wouldPay {
+	if wouldPay, _ = runDryRun(http.DefaultClient, server.URL, "GET", nil, nil, -1, []x402.PayOption{x402.WithMaxAmountUSD("10")}, &out); !wouldPay {
 		t.Errorf("cap 10 must pass:\n%s", out.String())
 	}
 }
@@ -236,7 +236,7 @@ func TestRunDryRunAdvisesRaisingTheCapOnlyWhenThePriceIsAboveIt(t *testing.T) {
 	defer server.Close()
 
 	var out strings.Builder
-	if _, err := runDryRun(http.DefaultClient, server.URL, "GET", nil, nil, -1, "1", x402.DefaultMaxBodyBytes, &out); err != nil {
+	if _, err := runDryRun(http.DefaultClient, server.URL, "GET", nil, nil, -1, []x402.PayOption{x402.WithMaxAmountUSD("1")}, &out); err != nil {
 		t.Fatalf("runDryRun: %v", err)
 	}
 	if !strings.Contains(out.String(), "to raise the cap, pass -max-usd") {
@@ -246,7 +246,7 @@ func TestRunDryRunAdvisesRaisingTheCapOnlyWhenThePriceIsAboveIt(t *testing.T) {
 	// A cap that is not a price is refused too. Raising it is no fix, so the
 	// report must not send the user to -max-usd.
 	out.Reset()
-	if _, err := runDryRun(http.DefaultClient, server.URL, "GET", nil, nil, -1, "not-a-price", x402.DefaultMaxBodyBytes, &out); err != nil {
+	if _, err := runDryRun(http.DefaultClient, server.URL, "GET", nil, nil, -1, []x402.PayOption{x402.WithMaxAmountUSD("not-a-price")}, &out); err != nil {
 		t.Fatalf("an unusable cap is a finding, not an error: %v", err)
 	}
 	if !strings.Contains(out.String(), "REFUSE") {
@@ -274,11 +274,97 @@ func TestDryRunRefusalNamesTheFlagExactlyOnce(t *testing.T) {
 	defer server.Close()
 
 	var out strings.Builder
-	wouldPay, err := runDryRun(http.DefaultClient, server.URL, "GET", nil, nil, -1, "1", x402.DefaultMaxBodyBytes, &out)
+	wouldPay, err := runDryRun(http.DefaultClient, server.URL, "GET", nil, nil, -1, []x402.PayOption{x402.WithMaxAmountUSD("1")}, &out)
 	if err != nil || wouldPay {
 		t.Fatalf("want a refusal, got wouldPay=%v err=%v", wouldPay, err)
 	}
 	if got := strings.Count(out.String(), "-max-usd"); got != 1 {
 		t.Errorf("the report mentions -max-usd %d times, want exactly once:\n%s", got, out.String())
+	}
+}
+
+// twoNetworkDryRunEndpoint advertises one option on each Kite network:
+// index 0 on testnet, index 1 on mainnet.
+func twoNetworkDryRunEndpoint(t *testing.T) *httptest.Server {
+	t.Helper()
+	option := func(network, asset, amount, name, version string) map[string]any {
+		return map[string]any{
+			"scheme": "exact", "network": network, "amount": amount, "asset": asset,
+			"payTo": "0x00000000000000000000000000000000000000ff", "maxTimeoutSeconds": 60,
+			"extra": map[string]any{"name": name, "version": version},
+		}
+	}
+	challenge := map[string]any{
+		"x402Version": 2,
+		"resource":    map[string]any{"url": "/v1/x", "description": "d", "mimeType": "application/json"},
+		"accepts": []any{
+			option("eip155:2368", kite.Testnet.AssetAddress, "1000000000000000", "pieUSD", "1"),
+			option("eip155:2366", kite.Mainnet.AssetAddress, "50000", "Bridged USDC (Kite AI)", "2"),
+		},
+	}
+	encoded := base64.StdEncoding.EncodeToString(func() []byte { raw, _ := json.Marshal(challenge); return raw }())
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("PAYMENT-SIGNATURE") != "" {
+			t.Errorf("dry run sent a signed payment to %s", r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("PAYMENT-REQUIRED", encoded)
+		w.WriteHeader(http.StatusPaymentRequired)
+	}))
+}
+
+func TestRunDryRunSelectsTheOptionOnTheRequestedNetwork(t *testing.T) {
+	server := twoNetworkDryRunEndpoint(t)
+	defer server.Close()
+	cap := []x402.PayOption{x402.WithMaxAmountUSD("1")}
+
+	var out strings.Builder
+	wouldPay, err := runDryRun(http.DefaultClient, server.URL, "GET", nil, nil, -1, append(cap, x402.WithNetwork("mainnet")), &out)
+	if err != nil {
+		t.Fatalf("runDryRun: %v", err)
+	}
+	if !wouldPay {
+		t.Errorf("0.05 USDC.e is within the $1 cap; report:\n%s", out.String())
+	}
+	for _, want := range []string{"pay would sign option 1", "eip155:2366"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("dry-run report missing %q:\n%s", want, out.String())
+		}
+	}
+	// The option is the one the caller named, and the report says so instead
+	// of calling it an automatic choice.
+	report := out.String()
+	if !strings.Contains(report, "chosen by network: the option on eip155:2366") || strings.Contains(report, "chosen automatically") {
+		t.Errorf("the report must name the network selection:\n%s", report)
+	}
+}
+
+func TestPayRefusesANetworkAndAnIndexTogether(t *testing.T) {
+	err := cmdPay([]string{"-network", "mainnet", "-o", "0", "http://127.0.0.1:1/v1/x"})
+	if err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+		t.Errorf("-network with -o must be refused before any request, got %v", err)
+	}
+}
+
+func TestRunDryRunRejectsANetworkSelectionItCannotHonor(t *testing.T) {
+	server := dryRunEndpoint(t, "1000000000000000") // testnet only
+	defer server.Close()
+	cap := []x402.PayOption{x402.WithMaxAmountUSD("1")}
+
+	var out strings.Builder
+	_, err := runDryRun(http.DefaultClient, server.URL, "GET", nil, nil, -1, append(cap, x402.WithNetwork("mainnet")), &out)
+	if err == nil || !strings.Contains(err.Error(), "none on eip155:2366") {
+		t.Errorf("a network the challenge does not offer must be refused by name, got %v", err)
+	}
+
+	_, err = runDryRun(http.DefaultClient, server.URL, "GET", nil, nil, -1, append(cap, x402.WithNetwork("eip155:1")), &out)
+	if err == nil || !strings.Contains(err.Error(), "unknown Kite network") {
+		t.Errorf("a network that is not Kite must be refused, got %v", err)
+	}
+
+	_, err = runDryRun(http.DefaultClient, server.URL, "GET", nil, nil, 0, append(cap, x402.WithNetwork("testnet")), &out)
+	if err == nil || !strings.Contains(err.Error(), "pass one or the other") {
+		t.Errorf("an index and a network together must be refused, got %v", err)
 	}
 }

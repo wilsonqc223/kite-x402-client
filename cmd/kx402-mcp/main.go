@@ -99,8 +99,9 @@ var tools = []toolDef{
 			"price in tokens and atomic units, the payee, and whether it passes the operator's " +
 			"price cap. Needs no wallet. Call this before kx402_pay when the price matters.",
 		InputSchema: objectSchema(map[string]any{
-			"url":    map[string]any{"type": "string", "description": "The endpoint URL to inspect."},
-			"option": map[string]any{"type": "integer", "description": "Index of the payment option kx402_pay would use; default auto-selects."},
+			"url":     map[string]any{"type": "string", "description": "The endpoint URL to inspect."},
+			"option":  map[string]any{"type": "integer", "description": "Index of the payment option kx402_pay would use; default auto-selects."},
+			"network": networkSchema(),
 		}, []string{"url"}),
 	},
 	{
@@ -112,10 +113,21 @@ var tools = []toolDef{
 			"before anything is signed, and the cap cannot be changed from a tool call. " +
 			"Use kx402_inspect first to see the price without spending.",
 		InputSchema: objectSchema(map[string]any{
-			"url":    map[string]any{"type": "string", "description": "The endpoint URL to pay."},
-			"option": map[string]any{"type": "integer", "description": "Index of the challenge option to pay; default auto-selects."},
+			"url":     map[string]any{"type": "string", "description": "The endpoint URL to pay."},
+			"option":  map[string]any{"type": "integer", "description": "Index of the challenge option to pay; default auto-selects."},
+			"network": networkSchema(),
 		}, []string{"url"}),
 	},
+}
+
+// networkSchema describes the `network` argument of kx402_inspect and
+// kx402_pay: a second way to name the option, for agents that think in
+// networks rather than in list positions.
+func networkSchema() map[string]any {
+	return map[string]any{
+		"type":        "string",
+		"description": "Pay on this Kite network instead of by option index: mainnet, testnet or a CAIP-2 id. Cannot be combined with option.",
+	}
 }
 
 func objectSchema(props map[string]any, required []string) map[string]any {
@@ -273,8 +285,9 @@ func toolBalance(args json.RawMessage, proxy string) (toolCallResult, error) {
 // signing anything, so an agent can check a price before committing to it.
 func toolInspect(args json.RawMessage, proxy string) (toolCallResult, error) {
 	var in struct {
-		URL    string `json:"url"`
-		Option *int   `json:"option"` // absent means auto-select, like kx402_pay
+		URL     string `json:"url"`
+		Option  *int   `json:"option"`  // absent means auto-select, like kx402_pay
+		Network string `json:"network"` // absent means no network preference
 	}
 	if err := json.Unmarshal(args, &in); err != nil || in.URL == "" {
 		return toolCallResult{}, fmt.Errorf("url is required")
@@ -283,17 +296,17 @@ func toolInspect(args json.RawMessage, proxy string) (toolCallResult, error) {
 	if err != nil {
 		return toolCallResult{}, err
 	}
-	option := -1
-	if in.Option != nil {
-		option = *in.Option
+	option, selection, err := selectionOptions(in.Option, in.Network)
+	if err != nil {
+		return toolCallResult{}, err
 	}
 	got, err := x402.Inspect(client, in.URL, "GET", nil, nil, option,
-		x402.WithMaxAmountUSD(payCapUSD()))
+		append(selection, x402.WithMaxAmountUSD(payCapUSD()))...)
 	if err != nil {
 		return toolCallResult{}, err
 	}
 	var report strings.Builder
-	wouldPay := cli.WriteInspection(&report, in.URL, option, got, cli.WalletAddressFromEnv())
+	wouldPay := cli.WriteInspection(&report, in.URL, got, cli.WalletAddressFromEnv())
 	if !wouldPay {
 		// The refusal is the answer to the question that was asked, so it is
 		// returned as a normal result rather than as a tool error.
@@ -309,6 +322,22 @@ func toolInspect(args json.RawMessage, proxy string) (toolCallResult, error) {
 		report.WriteString("call kx402_pay with the same url to proceed.\n")
 	}
 	return text(report.String()), nil
+}
+
+// selectionOptions turns the `option` and `network` arguments into the index
+// and Pay options that express them. They are two ways to name one choice,
+// so passing both is an error rather than a silent preference for either.
+func selectionOptions(option *int, network string) (int, []x402.PayOption, error) {
+	network = strings.TrimSpace(network)
+	switch {
+	case option != nil && network != "":
+		return 0, nil, fmt.Errorf("pass either option or network, not both")
+	case network != "":
+		return -1, []x402.PayOption{x402.WithNetwork(network)}, nil
+	case option != nil:
+		return *option, nil, nil
+	}
+	return -1, nil, nil
 }
 
 // withOperatorCapHint tells an agent refused by the price cap that only
@@ -336,8 +365,9 @@ func toolPay(args json.RawMessage, proxy string) (toolCallResult, error) {
 	// option is a pointer so that an explicit 0 (the first advertised
 	// option) is distinguishable from "absent", which means auto-select.
 	var in struct {
-		URL    string `json:"url"`
-		Option *int   `json:"option"`
+		URL     string `json:"url"`
+		Option  *int   `json:"option"`
+		Network string `json:"network"`
 	}
 	if err := json.Unmarshal(args, &in); err != nil || in.URL == "" {
 		return toolCallResult{}, fmt.Errorf("url is required")
@@ -354,13 +384,13 @@ func toolPay(args json.RawMessage, proxy string) (toolCallResult, error) {
 	if err != nil {
 		return toolCallResult{}, err
 	}
-	option := -1
-	if in.Option != nil {
-		option = *in.Option
+	option, selection, err := selectionOptions(in.Option, in.Network)
+	if err != nil {
+		return toolCallResult{}, err
 	}
 	cap := payCapUSD()
 	result, err := x402.Pay(client, in.URL, "GET", nil, nil, signer, option,
-		x402.WithMaxAmountUSD(cap))
+		append(selection, x402.WithMaxAmountUSD(cap))...)
 	if err != nil {
 		return toolCallResult{}, withOperatorCapHint(err)
 	}
